@@ -1634,7 +1634,7 @@ read_checkpoint_packed (int q)
     fprintf (stderr, "\nThe checkpoint appears to be corrupt. Trying the backup file.\n");
     fclose (fPtr);
   }
-  else if(x_packed[end] != q)
+  else if(x_packed[end] != (unsigned int) q)
   {
     fprintf (stderr, "\nThe checkpoint appears to be corrupt. Trying the backup file.\n");
     fclose(fPtr);
@@ -1654,7 +1654,7 @@ read_checkpoint_packed (int q)
     fprintf (stderr, "\nThe backup appears to be corrupt. Restarting test.\n");
     fclose (fPtr);
   }
-  else if(x_packed[end] != q)
+  else if(x_packed[end] != (unsigned int) q)
   {
     fprintf (stderr, "\nThe backup appears to be corrupt. Restarting test.\n");;
     fclose(fPtr);
