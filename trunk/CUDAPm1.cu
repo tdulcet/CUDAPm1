@@ -67,10 +67,10 @@ cufftHandle plan;
 
 int quitting, checkpoint_iter, fftlen, tfdepth=0, llsaved=0, s_f, t_f, r_f, d_f, k_f;
 int polite, polite_f;//, bad_selftest=0;
-int b1 = 1;
-int g_b2 = 12035000;
+int b1 = 600000;
+int g_b2 = 12000000;
 int g_d = 2310;
-int g_e = 2;
+int g_e = 6;
 int g_nrp = 20;
 
 char folder[132];
