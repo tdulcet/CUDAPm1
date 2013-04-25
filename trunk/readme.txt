@@ -4,25 +4,24 @@ make
 
 run with e.g.
 
-./CUDAPm1 61408363 -b1 500000 -f 3360k
+./CUDAPm1 61408363 -b1 600000 -b2 12000000 -f 3360k
 
 I am primarily interested in
 
 1. Does it run without errors
 2. Does it give correct results
 and much less important at this stage
-3. How long does it take with various d, e, rn
+3. How long does it take with various d, e, nrp
 
 LIMITATIONS
 
-The parameters b2, d, e, and rn (all set on line 1209) must be compiled in.
 b2 is the upper bound for stage2
 d = multiples of 30, 210, or 2310. I have only tested with d = 30, 210, and 2310, 
 not any higher multiples yet.
-e = 2, 4, 6, 8, 10, or 12, the B-S exponent. I have tested e = 2 and 4.
-rn = number of relative primes per pass.
+e = 2, 4, 6, 8, 10, or 12, the B-S exponent.
+nrp = number of relative primes per pass.
 
-The program can be terminated with ^C during stage1, not during Stage2.
+The program can be terminated with ^C during stage1, not during stage2.
 
 No sanity check is done on the values e and rn which affect memory use. 
 If these values are too high, Stage2 will teminate immediately with a cuda or cufft error, 
