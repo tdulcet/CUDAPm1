@@ -2137,18 +2137,24 @@ int get_gcd(double *x, unsigned *x_packed, int q, int n, int stage)
                 FILE* fp = fopen_and_lock(RESULTSFILE, "a");
 	        fprintf (fp, "M%d has a factor: ", q);
 	        mpz_out_str (fp, 10, prime1);
-                fprintf (fp, " (P-1, B1=%d, B2=%d, e=%d, n=%dK %s)\n", b1,g_b2,g_e,n/1024, program);
-		unlock_and_fclose(fp);
+		if  (AID[0] && strncasecmp(AID, "N/A", 3))
+                   fprintf (fp, " (P-1, B1=%d, B2=%d, e=%d, n=%dK, aid=%s %s)\n", b1,g_b2,g_e,n/1024, AID, program);
+		else
+                   fprintf (fp, " (P-1, B1=%d, B2=%d, e=%d, n=%dK %s)\n", b1,g_b2,g_e,n/1024, program);
+                unlock_and_fclose(fp);
 	      }
 	     } 
 	   if (rv == 0) {
-                printf( "M%d Stage %d found no factor ", q, stage);
+                printf( "M%d Stage %d found no factor", q, stage);
                 printf (" (P-1, B1=%d, B2=%d, e=%d, n=%dK %s)\n", b1,g_b2,g_e,n/1024, program);
                 if (stage==2) {
 		  FILE* fp = fopen_and_lock(RESULTSFILE, "a");
                   fprintf (fp, "M%d found no factor", q);
-                  fprintf (fp, " (P-1, B1=%d, B2=%d, e=%d, n=%dK %s)\n", b1,g_b2,g_e,n/1024, program);
-		  unlock_and_fclose(fp);
+                  if  (AID[0] && strncasecmp(AID, "N/A", 3))
+                    fprintf (fp, " (P-1, B1=%d, B2=%d, e=%d, n=%dK, aid=%s %s)\n", b1,g_b2,g_e,n/1024, AID, program);
+		  else
+                    fprintf (fp, " (P-1, B1=%d, B2=%d, e=%d, n=%dK %s)\n", b1,g_b2,g_e,n/1024, program);
+                  unlock_and_fclose(fp);
 	      }
 
 	    }
