@@ -2146,7 +2146,7 @@ int get_gcd(double *x, unsigned *x_packed, int q, int n, int stage)
                 printf (" (P-1, B1=%d, B2=%d, e=%d, n=%dK %s)\n", b1,g_b2,g_e,n/1024, program);
                 if (stage==2) {
 		  FILE* fp = fopen_and_lock(RESULTSFILE, "a");
-                  fprintf (fp, "M%d found no factor ", q);
+                  fprintf (fp, "M%d found no factor", q);
                   fprintf (fp, " (P-1, B1=%d, B2=%d, e=%d, n=%dK %s)\n", b1,g_b2,g_e,n/1024, program);
 		  unlock_and_fclose(fp);
 	      }
