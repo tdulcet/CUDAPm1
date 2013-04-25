@@ -67,8 +67,8 @@ cufftHandle plan;
 
 int quitting, checkpoint_iter, fftlen, tfdepth=0, llsaved=0, s_f, t_f, r_f, d_f, k_f;
 int polite, polite_f;//, bad_selftest=0;
-int b1 = 600000;
-int g_b2 = 12000000;
+int b1 = 0, g_b1_commandline = 0;
+int g_b2 = 0, g_b2_commandline = 0;
 int g_d = 2310;
 int g_e = 6;
 int g_nrp = 20;
@@ -2334,7 +2334,7 @@ void guess_pminus1_bounds (
 
 	// vals = cvt_mem_to_estimated_gwnums (max_mem (thread_num), k, b, n, c);
 	// if (vals < 1) vals = 1;
-	vals = 25;
+	vals = 125;
 
 /* Find the best B1 */
 
@@ -2753,6 +2753,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
       printf("ETA: ");
       print_time_from_seconds((int)(ttime * rpt / m - ttime));
       printf("\n");
+      fflush(stdout);
   }
   while(m < rpt);
   printf("Stage 2 complete, estimated total time = ");
@@ -3437,7 +3438,7 @@ int main (int argc, char *argv[])
 	  #endif
 	  do 
             { // while(!quitting)
-	
+	      double successrate = 0.0;
 	                 
 	      fftlen = f_f; // fftlen and AID change between tests, so be sure to reset them
 	      AID[0] = 0;
@@ -3448,6 +3449,13 @@ int main (int argc, char *argv[])
 	      #ifdef EBUG
 	      printf("Gotten assignment, about to call check().\n");
 	      #endif
+              if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
+                 guess_pminus1_bounds(q, tfdepth, llsaved, &b1, &g_b2, &successrate);
+              }
+              if (g_b1_commandline > 0) b1 = g_b1_commandline;
+              if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
+              if ((g_b1_commandline == 0) && (g_b2_commandline == 0))
+                 printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);
               check_pm1 (q, 0);
 	  
 	      if(!quitting) // Only clear assignment if not killed by user, i.e. test finished 
@@ -3649,7 +3657,7 @@ while (argc > 1)
 	      fprintf (stderr, "can't parse -b1 option\n\n");
 	      exit (2);
 	    }
-	  b1 = atoi(argv[2]);
+	  g_b1_commandline = atoi(argv[2]);
 	  argv += 2;
 	  argc -= 2;
 	}
@@ -3682,7 +3690,7 @@ while (argc > 1)
 	      fprintf (stderr, "can't parse -b2 option\n\n");
 	      exit (2);
 	    }
-	  g_b2 = atoi(argv[2]);
+	  g_b2_commandline = atoi(argv[2]);
 	  argv += 2;
 	  argc -= 2;
 	}
@@ -3744,17 +3752,17 @@ while (argc > 1)
     else if (g_d%29 !=0) ptest=29;
     else ptest=0;
     // printf("p=%d\n",ptest);
-    if (ptest > 0) {
-	if (b1 * ptest * 53 < g_b2) {
-		printf("b1 should be at least %d\n", g_b2/(ptest * 53));
+    if (ptest > 0 && g_b1_commandline > 0 && g_b2_commandline > 0) {
+	if (g_b1_commandline * ptest * 53 < g_b2_commandline) {
+		printf("b1 should be at least %d\n", g_b2_commandline/(ptest * 53));
 		exit(3);
     	}
-    	if (g_b2 < ptest * (2*g_e+1)) {
+    	if (g_b2_commandline < ptest * (2*g_e+1)) {
 		printf("b2 should be at least %d\n", ptest * (2*g_e+1));
 		exit(3);
     	}
-    	if (g_b2 < ptest * b1) {
-		printf("b2 should be at least %d\n", ptest * b1);
+    	if (g_b2_commandline < ptest * g_b1_commandline) {
+		printf("b2 should be at least %d\n", ptest * g_b1_commandline);
 		exit(3);
     	}
     }
