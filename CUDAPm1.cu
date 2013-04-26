@@ -71,7 +71,7 @@ int b1 = 0, g_b1_commandline = 0;
 int g_b2 = 0, g_b2_commandline = 0;
 int g_d = 2310;
 int g_e = 6;
-int g_nrp = 20;
+int g_nrp = 0;
 
 char folder[132];
 char input_filename[132], RESULTSFILE[132];
@@ -2577,7 +2577,6 @@ int stage2_init_param2(int num, int last_rp, int base, int e, int n)
 int stage2(double *x, unsigned *x_packed, int q, int n)
 {
   int j, i, t;
-  // int e = 2, d = 2310, b2 = 12035000, nrp = 20;
   int e = g_e, d = g_d, b2 = g_b2, nrp = g_nrp;
   int rpt, rp; 
   int ks, ke, m = 0, k;
@@ -2783,6 +2782,8 @@ check_pm1 (int q, char *expectedResidue)
   int bit;
   unsigned *control = NULL;
   int stage = 1;
+  size_t global_mem, free_mem;
+  int guess_param;
   
   signal (SIGTERM, SetQuitting);
   signal (SIGINT, SetQuitting);
@@ -2806,6 +2807,33 @@ check_pm1 (int q, char *expectedResidue)
     temp = exp2((q%n - n) / (double) n);
     printf("%0.55f\n",ttmp[5] * temp);
     if(ttmp) exit (1);*/
+
+    cudaMemGetInfo(&free_mem, &global_mem);
+    printf("CUDA reports %zuM of %zuM GPU memory free.\n",free_mem/1024/1024, global_mem/1024/1024);
+    g_d = 2310; // default (remove from command line?)
+    guess_param = (free_mem/n - 75)/8 - g_e - 1;
+    if (guess_param > 240) g_nrp = 240;
+    else if (guess_param > 120) g_nrp = 120;
+    else if (guess_param > 80) g_nrp = 80;
+    else if (guess_param > 60) g_nrp = 60;
+    else if (guess_param > 40) g_nrp = 40;
+    else if (guess_param > 20) g_nrp = 20;
+    else if (guess_param > 10) g_nrp = 10;
+    else {
+         g_e = 2; g_d = 210; // lower memory
+         guess_param = (free_mem/n - 75)/8 - g_e - 1;
+         if (guess_param > 12) g_nrp=12; 
+         else if (guess_param > 8) g_nrp=8; 
+         else if (guess_param > 6) g_nrp=6; 
+         else if (guess_param > 4) g_nrp=4; 
+         else if (guess_param > 2) { g_nrp=2; g_d=30;} // lowest memory
+         else {
+              printf("Sorry, you do not have enough free GPU memory!\n");
+              exit(9);
+         }
+    }
+    printf("Using e=%d, d=%d, nrp=%d\n", g_e, g_d, g_nrp);
+    fflush(stdout); 
     gettimeofday (&time0, NULL);
     start_time = time0.tv_sec;
  

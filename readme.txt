@@ -26,7 +26,7 @@ The program can be terminated with ^C during stage1, not during stage2.
 No sanity check is done on the values e and rn which affect memory use. 
 If these values are too high, Stage2 will teminate immediately with a cuda or cufft error, 
 possibly cufftSafeCall() CUFFT error 2: CUFFT_ALLOC_FAILED. 
-Current memory use is m = ~(50 + 8*(rn + e + 1)) * n bytes where n is the fft size.
+Current memory use is m = ~(75 + 8*(nrp + e + 1)) * n bytes where n is the fft size.
 cufft uses additional memory. Its probably safe to keep 
 m < total memory - 100Mb - (base usage if used to drive the display)
 
