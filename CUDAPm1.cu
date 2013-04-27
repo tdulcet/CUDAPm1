@@ -3505,7 +3505,6 @@ int main (int argc, char *argv[])
 	      #ifdef EBUG
 	      printf("Gotten assignment, about to call check().\n");
 	      #endif
-    printf("%d %d %d %d\n", g_b1_commandline,g_b2_commandline,g_d_commandline,g_e);
 
               if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
                  guess_pminus1_bounds(q, tfdepth, llsaved, &b1, &g_b2, &successrate);
@@ -3528,7 +3527,17 @@ int main (int argc, char *argv[])
     else // Exponent passed in as argument
       {
 	if (!valid_assignment(q, fftlen)) {printf("\n");} //! v_a prints warning
-	else check_pm1 (q, 0);
+	else {
+              double successrate;
+              if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
+                 guess_pminus1_bounds(q, 60, 2, &b1, &g_b2, &successrate);
+              }
+              if (g_b1_commandline > 0) b1 = g_b1_commandline;
+              if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
+              if ((g_b1_commandline == 0) && (g_b2_commandline == 0))
+                 printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);
+              check_pm1 (q, 0);
+        }
       }
   } // end if(-r) else if(-cufft) else(workfile)
 } // end main()
