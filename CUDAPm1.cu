@@ -69,7 +69,7 @@ int quitting, checkpoint_iter, fftlen, tfdepth=0, llsaved=0, s_f, t_f, r_f, d_f,
 int polite, polite_f;//, bad_selftest=0;
 int b1 = 0, g_b1_commandline = 0;
 int g_b2 = 0, g_b2_commandline = 0;
-int g_d = 2310;
+int g_d = 2310, g_d_commandline = 0;
 int g_e = 6;
 int g_nrp = 0;
 
@@ -2782,8 +2782,8 @@ check_pm1 (int q, char *expectedResidue)
   int bit;
   unsigned *control = NULL;
   int stage = 1;
-  size_t global_mem, free_mem;
-  int guess_param;
+  size_t global_mem, free_mem, use_mem;
+  int ptest, nrp_max;
   
   signal (SIGTERM, SetQuitting);
   signal (SIGINT, SetQuitting);
@@ -2810,29 +2810,57 @@ check_pm1 (int q, char *expectedResidue)
 
     cudaMemGetInfo(&free_mem, &global_mem);
     printf("CUDA reports %zuM of %zuM GPU memory free.\n",free_mem/1024/1024, global_mem/1024/1024);
-    g_d = 2310; // default (remove from command line?)
-    guess_param = (free_mem/n - 75)/8 - g_e - 1;
-    if (guess_param > 240) g_nrp = 240;
-    else if (guess_param > 120) g_nrp = 120;
-    else if (guess_param > 80) g_nrp = 80;
-    else if (guess_param > 60) g_nrp = 60;
-    else if (guess_param > 40) g_nrp = 40;
-    else if (guess_param > 20) g_nrp = 20;
-    else if (guess_param > 10) g_nrp = 10;
-    else {
-         g_e = 2; g_d = 210; // lower memory
-         guess_param = (free_mem/n - 75)/8 - g_e - 1;
-         if (guess_param > 12) g_nrp=12; 
-         else if (guess_param > 8) g_nrp=8; 
-         else if (guess_param > 6) g_nrp=6; 
-         else if (guess_param > 4) g_nrp=4; 
-         else if (guess_param > 2) { g_nrp=2; g_d=30;} // lowest memory
-         else {
-              printf("Sorry, you do not have enough free GPU memory!\n");
-              exit(9);
-         }
+
+    if (g_d_commandline == 0) g_d = 2310;
+    else g_d = g_d_commandline;
+    if (g_d%2310 == 0) nrp_max = 480;
+    else if (g_d%210 == 0) nrp_max = 48;
+    else if (g_d%30 == 0) nrp_max = 8;
+    else exit(9);  // should never reach this!
+ 
+    g_nrp = (free_mem/n - 75)/8 - g_e - 1;
+    if (g_nrp > nrp_max) g_nrp = nrp_max;
+    if (g_nrp < 1) g_nrp = 1;
+    if ((g_d_commandline == 0) && (g_nrp < 4)) {
+         g_e = 2; g_d = 210; nrp_max = 48; // lower memory
+         g_nrp = (free_mem/n - 75)/8 - g_e - 1;
+         if (g_nrp > nrp_max) g_nrp = nrp_max;
+         if (g_nrp < 3) { g_nrp=2; g_d=30; nrp_max=8;} // lowest memory
     }
+    while (nrp_max % g_nrp != 0) g_nrp--;
     printf("Using e=%d, d=%d, nrp=%d\n", g_e, g_d, g_nrp);
+    use_mem = (size_t) ((75 + 8*(g_nrp + g_e + 1)) * (size_t) n);
+    printf("Using approximately %zuM GPU memory.\n",use_mem/1024/1024);
+    if (free_mem < use_mem)
+       printf("WARNING:  There may not be enough GPU memory for stage 2!\n");
+
+    // Make sure parameters are sane.
+    if (g_d%7 != 0) ptest=7;
+    else if (g_d%11 !=0) ptest=11;
+    else if (g_d%13 !=0) ptest=13;
+    else if (g_d%17 !=0) ptest=17;
+    else if (g_d%19 !=0) ptest=19;
+    else if (g_d%23 !=0) ptest=23;
+    else if (g_d%27 !=0) ptest=27;
+    else if (g_d%29 !=0) ptest=29;
+    else ptest=0;
+    // printf("p=%d\n",ptest);
+    if (ptest > 0) {
+	if (b1 * ptest * 53 < g_b2) {
+		printf("B1 should be at least %d, increasing it.\n", g_b2/(ptest * 53)+1);
+		b1 = g_b2/(ptest * 53)+1;
+    	}
+    	if (g_b2 < ptest * g_d * (2*g_e+1)) {
+		printf("B2 should be at least %d, increasing it.\n", ptest * g_d * (2*g_e+1));
+		g_b2 = ptest * g_d * (2*g_e+1);
+    	}
+    	if (g_b2 < ptest * b1) {
+		printf("B2 should be at least %d, increasing it.\n", ptest * b1);
+		g_b2 = ptest * b1;
+    	}
+        
+    }
+
     fflush(stdout); 
     gettimeofday (&time0, NULL);
     start_time = time0.tv_sec;
@@ -3477,6 +3505,8 @@ int main (int argc, char *argv[])
 	      #ifdef EBUG
 	      printf("Gotten assignment, about to call check().\n");
 	      #endif
+    printf("%d %d %d %d\n", g_b1_commandline,g_b2_commandline,g_d_commandline,g_e);
+
               if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
                  guess_pminus1_bounds(q, tfdepth, llsaved, &b1, &g_b2, &successrate);
               }
@@ -3506,7 +3536,6 @@ int main (int argc, char *argv[])
 void parse_args(int argc, char *argv[], int* q, int* device_number, 
 		int* cufftbench_s, int* cufftbench_e, int* cufftbench_d)
 {
-int ptest;
 while (argc > 1)
     {
       if (strcmp (argv[1], "-t") == 0)
@@ -3707,7 +3736,7 @@ while (argc > 1)
 	      fprintf (stderr, "can't parse -d2 option\n\n");
 	      exit (2);
 	    }
-	  g_d = atoi(argv[2]);
+	  g_d_commandline = atoi(argv[2]);
 	  argv += 2;
 	  argc -= 2;
 	}
@@ -3760,39 +3789,13 @@ while (argc > 1)
 	  argc--;
 	}
     }
-    if ((g_d%30 != 0) && (g_d%210 != 0) && (g_d%2310 != 0)) {
+    if (g_d_commandline%30 != 0) {
 	printf("-d2 must be a multiple of 30, 210, or 2310.\n");
 	exit(3);
     }
     if ((g_e%2 != 0) || (g_e < 2) || (g_e > 12)) {
 	printf("-e2 must be 2, 4, 6, 8, 10, or 12.\n");
 	exit(3);
-    }
-    // move this to later assignment validation?
-    // also add check for e2 not too large...
-    if (g_d%7 != 0) ptest=7;
-    else if (g_d%11 !=0) ptest=11;
-    else if (g_d%13 !=0) ptest=13;
-    else if (g_d%17 !=0) ptest=17;
-    else if (g_d%19 !=0) ptest=19;
-    else if (g_d%23 !=0) ptest=23;
-    else if (g_d%27 !=0) ptest=27;
-    else if (g_d%29 !=0) ptest=29;
-    else ptest=0;
-    // printf("p=%d\n",ptest);
-    if (ptest > 0 && g_b1_commandline > 0 && g_b2_commandline > 0) {
-	if (g_b1_commandline * ptest * 53 < g_b2_commandline) {
-		printf("b1 should be at least %d\n", g_b2_commandline/(ptest * 53));
-		exit(3);
-    	}
-    	if (g_b2_commandline < ptest * (2*g_e+1)) {
-		printf("b2 should be at least %d\n", ptest * (2*g_e+1));
-		exit(3);
-    	}
-    	if (g_b2_commandline < ptest * g_b1_commandline) {
-		printf("b2 should be at least %d\n", ptest * g_b1_commandline);
-		exit(3);
-    	}
     }
 }
 
