@@ -2744,7 +2744,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
 	    t += rpt - nrp;
     }
       gettimeofday (&time1, NULL);
-      int time = 1000000.0 * (double)(time1.tv_sec - time0.tv_sec) + time1.tv_usec - time0.tv_usec;
+      time = 1000000.0 * (double)(time1.tv_sec - time0.tv_sec) + time1.tv_usec - time0.tv_usec;
       ttime += time / 1000000.0;
       printf("ptime: %f, transforms: %d, average: %f\n", time /  1000000.0, num_tran, time / (float) (num_tran * 1000));
       m += nrp;
