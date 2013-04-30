@@ -1668,6 +1668,11 @@ read_checkpoint_packed (int q)
   x_packed[end + 2] = 1;
   x_packed[end + 3] = (unsigned) -1;
   x_packed[end + 4] = 0;
+  x_packed[end + 5] = 0;
+  x_packed[end + 6] = 0;
+  x_packed[end + 7] = 0;
+  x_packed[end + 8] = 0;
+  x_packed[end + 9] = 0;
   return x_packed;
 }
 
