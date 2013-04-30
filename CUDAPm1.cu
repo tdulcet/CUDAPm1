@@ -1245,8 +1245,8 @@ makect (int nc, double *c)
 {
   int j;
   double d = (double) (nc << 1);
-
-  for (j = 1; j <= nc; j++) c[j] = 0.5 * cospi (j / d);
+  c[0] = cospi (nc / d);
+  for (j = 1; j < nc; j++) c[j] = 0.5 * cospi (j / d);
 }
 
 void get_weights(int q, int n)
@@ -2786,7 +2786,6 @@ check_pm1 (int q, char *expectedResidue)
   
   signal (SIGTERM, SetQuitting);
   signal (SIGINT, SetQuitting);
-  control = get_control(&last, b1, 0, q);
   do
   {				/* while (restarting) */
     maxerr = 0.0;
@@ -2859,8 +2858,9 @@ check_pm1 (int q, char *expectedResidue)
     	}
         
     }
-
     fflush(stdout); 
+
+    control = get_control(&last, b1, 0, q);
     gettimeofday (&time0, NULL);
     start_time = time0.tv_sec;
  
@@ -3005,24 +3005,12 @@ check_pm1 (int q, char *expectedResidue)
 	    //  exit (1);
 	    //}
 	    cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
-      if (standardize_digits(x, q, n, 0, n))
-      {
-        // printf ("M( %d )P, n = %dK, %s", q, n / 1024, program);
-        // if (fp) fprintf (fp, "M( %d )P, n = %dK, %s", q, n / 1024, program);
-      }
-	    else printbits (x, q, n, offset, NULL , 0, 1); 
+      standardize_digits(x, q, n, 0, n);
+      printbits (x, q, n, offset, NULL , 0, 1); 
       total_time += (time1.tv_sec - start_time);
-      if (stage == 1) printf ("\nStage 1 complete, estimated total time = ");
-      else printf ("\nStage 2 complete, estimated total time = ");
+      printf ("\nStage 1 complete, estimated total time = ");
       print_time_from_seconds(total_time);
-	    
-	//    if( AID[0] && strncasecmp(AID, "N/A", 3) )  
-      //{ // If (AID is not empty), AND (AID is NOT "N/A") (case insensitive)
-        //fprintf(fp, ", AID: %s\n", AID);
-	 //   } 
-      //else fprintf(fp, "\n");
-	//    unlock_and_fclose(fp);
-	    fflush (stdout);
+      fflush (stdout);
       free ((char *) control);
       printf("\nStarting stage 1 gcd.\n");
       if(!get_gcd(x, x_packed, q, n, 1))
@@ -3049,7 +3037,7 @@ check_pm1 (int q, char *expectedResidue)
             printbits (x, q, n, 0, NULL, 0, 0); 
 	          printf("\n");
 	        }*/
-	        cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
+	  cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
           if (!standardize_digits(x, q, n, 0, n))
           { 
             set_checkpoint_data(x_packed, q, n, j + 1, offset, total_time);
