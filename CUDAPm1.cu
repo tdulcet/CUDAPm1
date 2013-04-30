@@ -2619,12 +2619,13 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
 
   cutilSafeCall (cudaMalloc ((void **) &e_data, sizeof (double) * n * (e + 1)));
   cutilSafeCall (cudaMalloc ((void **) &rp_data, sizeof (double) * n * nrp));
-	bprimes = (uint8*) malloc((b2) * sizeof(uint8));
+  bprimes = (uint8*) malloc((b2) * sizeof(uint8));
   if(!bprimes) 
   {
     printf("failed to allocate bprimes\n");
     exit (1);
   }
+  for (j=0; j<b2; j++) bprimes[j]=0;
   gtpr(b2, bprimes);
 
   ks = ((((b2 / sprimes[i] + 1) >> 1) + d - 1) / d - 1) * d;
@@ -2702,7 +2703,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
     }
     rp++;
   }
-  printf("Zeros: %d, Ones: %d, Pairs %d\n", count0, count1, count2);
+  printf("Zeros: %d, Ones: %d, Pairs: %d\n", count0, count1, count2);
 	/*for (i = 0; i < 180; i++)
 	{
 		for(j = 0; j < 8; j++)
