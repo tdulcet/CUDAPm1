@@ -3501,6 +3501,7 @@ int main (int argc, char *argv[])
 
               if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
                  guess_pminus1_bounds(q, tfdepth, llsaved, &b1, &g_b2, &successrate);
+                 if (g_b2 > 16750000) g_b2 = 16750000; //max B2 supported?
               }
               if (g_b1_commandline > 0) b1 = g_b1_commandline;
               if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
