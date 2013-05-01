@@ -2864,6 +2864,7 @@ check_pm1 (int q, char *expectedResidue)
     	}
         
     }
+    if (g_b2 > 16750000) printf("WARNING:  Expected failure with B2 > 16750000!\n"); //max B2 supported?
     fflush(stdout); 
 
     control = get_control(&last, b1, 0, q);
@@ -3524,7 +3525,8 @@ int main (int argc, char *argv[])
 	else {
               double successrate;
               if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
-                 guess_pminus1_bounds(q, 60, 2, &b1, &g_b2, &successrate);
+                 guess_pminus1_bounds(q, 74, 2, &b1, &g_b2, &successrate);
+                 if (g_b2 > 16750000) g_b2 = 16750000; //max B2 supported?
               }
               if (g_b1_commandline > 0) b1 = g_b1_commandline;
               if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
