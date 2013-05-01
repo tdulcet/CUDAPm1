@@ -2526,7 +2526,7 @@ void next_base(int e, int n)
 int stage2_init_param1(int k, int base, int e, int n)
 {
   int i, j;
-  mpz_t exponents[e];
+  mpz_t exponents[e+1];
   
   for(j = 0; j <= e; j++) mpz_init(exponents[j]);
   for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2) * base, e);
@@ -2539,7 +2539,7 @@ int stage2_init_param1(int k, int base, int e, int n)
       E_to_the_p(&e_data[j * n], g_y, exponents[j], n);
  	    cutilSafeThreadSync();
   }
-  for(j = 0; j < e; j++) mpz_clear(exponents[j]);
+  for(j = 0; j <= e; j++) mpz_clear(exponents[j]);
   E_pre_mul(&e_data[0], &e_data[0], n);
   E_pre_mul(&e_data[e * n], &e_data[e * n], n);
   for(j = 1; j < e; j++) 
