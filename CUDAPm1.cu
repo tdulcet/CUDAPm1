@@ -3587,8 +3587,8 @@ while (argc > 1)
 	       "                       -d2         Brent-Suyama coefficient (multiple of 30, 210, or 2310) \n\n");
       	  fprintf (stderr,
 	       "                       -e2         Brent-Suyama exponent (2-12) \n\n");
-      	  fprintf (stderr,
-	       "                       -nrp2       Relative primes per pass (divisor of 8, 48, or 480)\n\n");
+      	  //fprintf (stderr,  // Now an internal parameter
+	  //     "                       -nrp2       Relative primes per pass (divisor of 8, 48, or 480)\n\n");
       	  exit (2);          
       	}
       else if (strcmp (argv[1], "-v") == 0)
