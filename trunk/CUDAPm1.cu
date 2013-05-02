@@ -931,7 +931,7 @@ uint32 tiny_soe(uint32 limit, uint32 *primes)
 	
 	//sieve using primes less than the sqrt of the desired limit
 	//flags are created only for odd numbers (mod2)
-	for (i=1;i<(uint32)(sqrt(limit)/2+1);i++)
+	for (i=1;i<(uint32)(sqrt((double)limit)/2+1);i++)
 	{
 		if (flags[i] > 0)
 		{
@@ -1010,7 +1010,7 @@ int gtpr(int n, uint8* bprimes)
 	//if (argc > 1)
 	//	N = strtoull(argv[1],NULL,10);
 	N = n;
-	Nsmall = (uint32)sqrt(N);
+	Nsmall = (uint32)sqrt((double) N);
 	 
 	if (N > 10000000000)
 	{
@@ -1042,7 +1042,7 @@ int gtpr(int n, uint8* bprimes)
 		//(int)sqrt(numblocks)+1, (int)sqrt(numblocks)+1, threadsPerBlock, primes_per_thread);
 	//printf("sieved blocks have %d extra flags\n", 
 		//((int)sqrt(numblocks)+1)*((int)sqrt(numblocks)+1)*block_size*3 - N);
-	dim3 grid((uint32)sqrt(numblocks)+1,(uint32)sqrt(numblocks)+1);
+	dim3 grid((uint32)sqrt((double)numblocks)+1,(uint32)sqrt((double)numblocks)+1);
 	
 	// init result array of block counts
 	//printf("number of blocks: %d\n", numblocks);
