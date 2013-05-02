@@ -658,7 +658,7 @@ __constant__ uint32 _step19[19] = 	{2147483712,4096,262176,16779264,1073872896,8
 									536870928,1024,65544,4194816,268468224,2097152,134217732,
 									256,16386,1048704,67117056,524288,33554433};
 
-__global__ static void SegSieve(uint32 *count, uint32 *primes, int maxp, int nump, uint32 maxID, uint8 *results)
+__global__ static void SegSieve(uint32 *count, uint32 *primes, int maxp, int nump, uint32 N, uint8 *results)
 { 
 	/* 
 	expect as input a set of primes to sieve with, how many of those primes there are (maxp)
@@ -680,6 +680,7 @@ __global__ static void SegSieve(uint32 *count, uint32 *primes, int maxp, int num
 	*/
 	
 	uint32 i,j,k;
+	uint32 maxID = (N + 1) / 3;
 	uint32 bid = blockIdx.y * gridDim.x + blockIdx.x;	
 	uint32 range = block_size / threadsPerBlock;
 	__shared__ uint8 locsieve[block_size];
@@ -901,11 +902,10 @@ __global__ static void SegSieve(uint32 *count, uint32 *primes, int maxp, int num
 			k += bitsieve[j];
 		count[bid] = k;
 	}
-	if(threadIdx.x == 0 && (bid * block_size + j + k) < maxID)
-	  for (k=0; k<block_size; k++)
+	  for (k=0; k < block_size; k++)
 	  {
-	    j = (k * 3 + 1 + (k & 1)) >> 1;
-	    results[((bid * block_size * 3) >> 1) + j] = locsieve[k];
+	    j = ((bid * block_size + k) * 3 + 1) >> 1; 
+	    if(j < (N + 1) >> 1) results[j] = locsieve[k];
 	  }
 }
 
@@ -1046,8 +1046,8 @@ int gtpr(int n, uint8* bprimes)
 	
 	// init result array of block counts
 	//printf("number of blocks: %d\n", numblocks);
-	cudaMalloc((void**) &results, sizeof(uint8) * (N >> 1));
-	cudaMemset(results, 0, sizeof(uint8) * (N >> 1));
+	cudaMalloc((void**) &results, sizeof(uint8) * ((N + 1) >> 1));
+	cudaMemset(results, 0, sizeof(uint8) * ((N + 1) >> 1));
 	//bprimes = (uint8*)malloc(array_size*sizeof(uint8));
 	cudaMalloc((void**) &block_counts, sizeof(uint32) * numblocks);
 	cudaMemset(block_counts, 0, sizeof(uint32) * numblocks);
@@ -1055,7 +1055,7 @@ int gtpr(int n, uint8* bprimes)
 	//cutCreateTimer(&thandle);
 	//cutStartTimer(thandle);
 
-	SegSieve<<<grid, threadsPerBlock, 0>>>(block_counts, device_primes, np, primes_per_thread, (N+1)/3, results);
+	SegSieve<<<grid, threadsPerBlock, 0>>>(block_counts, device_primes, np, primes_per_thread, N, results);
 
 	cudaThreadSynchronize();  
 	//cutStopTimer(thandle);
@@ -1063,7 +1063,7 @@ int gtpr(int n, uint8* bprimes)
 
 	block_counts_on_host = (uint32 *)malloc(numblocks * sizeof(uint32));
 	cudaMemcpy(block_counts_on_host, block_counts, sizeof(uint32) * numblocks, cudaMemcpyDeviceToHost);
-	cudaMemcpy (bprimes, results, sizeof (uint8) * (n >> 1), cudaMemcpyDeviceToHost);
+	cudaMemcpy (bprimes, results, sizeof (uint8) * ((N + 1) >> 1), cudaMemcpyDeviceToHost);
 
 	cudaFree(device_primes);
 	cudaFree(block_counts);
@@ -2617,16 +2617,16 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
 	  rpt = 2 * d / 6;
 	}
 
-  cutilSafeCall (cudaMalloc ((void **) &e_data, sizeof (double) * n * (e + 1)));
-  cutilSafeCall (cudaMalloc ((void **) &rp_data, sizeof (double) * n * nrp));
-  bprimes = (uint8*) malloc((b2) * sizeof(uint8));
+  bprimes = (uint8*) malloc(((b2 + 1) >> 1) * sizeof(uint8));
   if(!bprimes) 
   {
     printf("failed to allocate bprimes\n");
     exit (1);
   }
-  for (j=0; j<b2; j++) bprimes[j]=0;
+  for (j=0; j < (b2 + 1) >> 1; j++) bprimes[j]=0;
   gtpr(b2, bprimes);
+  cutilSafeCall (cudaMalloc ((void **) &e_data, sizeof (double) * n * (e + 1)));
+  cutilSafeCall (cudaMalloc ((void **) &rp_data, sizeof (double) * n * nrp));
 
   ks = ((((b2 / sprimes[i] + 1) >> 1) + d - 1) / d - 1) * d;
   ke = ((((b2 + 1) >> 1) + d - 1) / d) * d;
