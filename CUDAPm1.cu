@@ -536,7 +536,7 @@ __global__ void norm1a (double *g_in,
   }
 }
 
-
+ 
 
 __global__ void
 normalize2_kernel (double *g_x, int g_N, int threads, int *g_data, double *g_ttp1, int g_err_flag)
@@ -905,7 +905,7 @@ __global__ static void SegSieve(uint32 *count, uint32 *primes, int maxp, int num
 	  for (k=0; k < block_size; k++)
 	  {
 	    j = ((bid * block_size + k) * 3 + 1) >> 1; 
-	    if(j < (N + 1) >> 1) results[j] = locsieve[k];
+	    if(j < N >> 1) results[j] = locsieve[k];
 	  }
 }
 
@@ -1046,8 +1046,8 @@ int gtpr(int n, uint8* bprimes)
 	
 	// init result array of block counts
 	//printf("number of blocks: %d\n", numblocks);
-	cudaMalloc((void**) &results, sizeof(uint8) * ((N + 1) >> 1));
-	cudaMemset(results, 0, sizeof(uint8) * ((N + 1) >> 1));
+	cudaMalloc((void**) &results, sizeof(uint8) * (N >> 1));
+	cudaMemset(results, 0, sizeof(uint8) * (N >> 1));
 	//bprimes = (uint8*)malloc(array_size*sizeof(uint8));
 	cudaMalloc((void**) &block_counts, sizeof(uint32) * numblocks);
 	cudaMemset(block_counts, 0, sizeof(uint32) * numblocks);
@@ -1063,7 +1063,7 @@ int gtpr(int n, uint8* bprimes)
 
 	block_counts_on_host = (uint32 *)malloc(numblocks * sizeof(uint32));
 	cudaMemcpy(block_counts_on_host, block_counts, sizeof(uint32) * numblocks, cudaMemcpyDeviceToHost);
-	cudaMemcpy (bprimes, results, sizeof (uint8) * ((N + 1) >> 1), cudaMemcpyDeviceToHost);
+	cudaMemcpy (bprimes, results, sizeof (uint8) * (N >> 1), cudaMemcpyDeviceToHost);
 
 	cudaFree(device_primes);
 	cudaFree(block_counts);
@@ -2617,19 +2617,19 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
 	  rpt = 2 * d / 6;
 	}
 
-  bprimes = (uint8*) malloc(((b2 + 1) >> 1) * sizeof(uint8));
+  ks = ((((b2 / sprimes[i] + 1) >> 1) + d - 1) / d - 1) * d;
+  ke = ((((b2 + 1) >> 1) + d - 1) / d) * d;
+  bprimes = (uint8*) malloc(ke * sizeof(uint8));
   if(!bprimes) 
   {
     printf("failed to allocate bprimes\n");
     exit (1);
   }
   for (j=0; j < (b2 + 1) >> 1; j++) bprimes[j]=0;
-  gtpr(b2, bprimes);
+  gtpr(2 * ke, bprimes);
   cutilSafeCall (cudaMalloc ((void **) &e_data, sizeof (double) * n * (e + 1)));
   cutilSafeCall (cudaMalloc ((void **) &rp_data, sizeof (double) * n * nrp));
 
-  ks = ((((b2 / sprimes[i] + 1) >> 1) + d - 1) / d - 1) * d;
-  ke = ((((b2 + 1) >> 1) + d - 1) / d) * d;
 
   for( j = (b1 + 1) >> 1; j < ks; j++)
   {
@@ -2852,7 +2852,7 @@ check_pm1 (int q, char *expectedResidue)
     if (ptest > 0) {
 	if (b1 * ptest * 53 < g_b2) {
 		printf("B1 should be at least %d, increasing it.\n", g_b2/(ptest * 53)+1);
-		b1 = g_b2/(ptest * 53)+1;
+		//b1 = g_b2/(ptest * 53)+1;
     	}
     	if (g_b2 < ptest * g_d * (2*g_e+1)) {
 		printf("B2 should be at least %d, increasing it.\n", ptest * g_d * (2*g_e+1));
@@ -3013,6 +3013,8 @@ check_pm1 (int q, char *expectedResidue)
 	    //}
 	    cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
       standardize_digits(x, q, n, 0, n);
+      set_checkpoint_data(x_packed, q, n, j + 1, offset, total_time);
+      commit_checkpoint_packed (x, x_packed, q, n); 
       printbits (x, q, n, offset, NULL , 0, 1); 
       total_time += (time1.tv_sec - start_time);
       printf ("\nStage 1 complete, estimated total time = ");
@@ -3057,7 +3059,7 @@ check_pm1 (int q, char *expectedResidue)
 	   get_gcd(x, x_packed, q, n, 2);
       }
       stage++;
-	    rm_checkpoint (q);
+	    //rm_checkpoint (q);
 	    printf("\n");
 	  }
     close_lucas (x);
