@@ -2852,7 +2852,7 @@ check_pm1 (int q, char *expectedResidue)
     if (ptest > 0) {
 	if (b1 * ptest * 53 < g_b2) {
 		printf("B1 should be at least %d, increasing it.\n", g_b2/(ptest * 53)+1);
-		//b1 = g_b2/(ptest * 53)+1;
+		b1 = g_b2/(ptest * 53)+1;
     	}
     	if (g_b2 < ptest * g_d * (2*g_e+1)) {
 		printf("B2 should be at least %d, increasing it.\n", ptest * g_d * (2*g_e+1));
