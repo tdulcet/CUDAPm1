@@ -92,7 +92,7 @@ mfaktc 0.07-0.14 to see Luigis code.
   #define strncasecmp _strnicmp
   
   /* Everything from here to the next include is to make MSVS happy. */
-  #define sscanf sscanf_s /* This only works for scanning numbers, or strings with a defined length (e.g. "%131s") */
+  // #define sscanf sscanf_s /* This only works for scanning numbers, or strings with a defined length (e.g. "%131s") */
   void strcopy(char* dest, char* src, size_t n) 
   {
     strncpy_s(dest, MAX_LINE_LENGTH+1, src, n);
