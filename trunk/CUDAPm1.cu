@@ -1627,7 +1627,9 @@ read_checkpoint_packed (int q)
   fPtr = fopen (chkpnt_cfn, "rb");
   if (!fPtr)
   {
+#ifndef _MSC_VER
     if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the checkpoint file. Trying the backup file.\n");
+#endif
   }
   else if (fread (x_packed, 1, sizeof (unsigned) * (end + 10) , fPtr) != (sizeof (unsigned) * (end + 10)))
   {
@@ -1647,7 +1649,9 @@ read_checkpoint_packed (int q)
   fPtr = fopen(chkpnt_tfn, "rb");
   if (!fPtr)
   {
+#ifndef _MSC_VER
     if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the backup file. Restarting test.\n");
+#endif
   }
   else if (fread (x_packed, 1, sizeof (unsigned) * (end + 10) , fPtr) != (sizeof (unsigned) * (end + 10)))
   {
@@ -2526,8 +2530,8 @@ void next_base(int e, int n)
 int stage2_init_param1(int k, int base, int e, int n)
 {
   int i, j;
-  mpz_t exponents[e+1];
-  
+  mpz_t *exponents; 
+  exponents = (mpz_t *) malloc((e+1) * sizeof(mpz_t));
   for(j = 0; j <= e; j++) mpz_init(exponents[j]);
   for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2) * base, e);
   for(j = 0; j < e; j++)
@@ -2813,8 +2817,11 @@ check_pm1 (int q, char *expectedResidue)
     if(ttmp) exit (1);*/
 
     cudaMemGetInfo(&free_mem, &global_mem);
+#ifdef _MSC_VER
+    printf("CUDA reports %IuM of %IuM GPU memory free.\n",free_mem/1024/1024, global_mem/1024/1024);
+#else
     printf("CUDA reports %zuM of %zuM GPU memory free.\n",free_mem/1024/1024, global_mem/1024/1024);
-
+#endif
     if (g_d_commandline == 0) g_d = 2310;
     else g_d = g_d_commandline;
     if (g_d%2310 == 0) nrp_max = 480;
@@ -2834,7 +2841,11 @@ check_pm1 (int q, char *expectedResidue)
     while (nrp_max % g_nrp != 0) g_nrp--;
     printf("Using e=%d, d=%d, nrp=%d\n", g_e, g_d, g_nrp);
     use_mem = (size_t) ((75 + 8*(g_nrp + g_e + 1)) * (size_t) n);
+#ifdef _MSC_VER
+    printf("Using approximately %IuM GPU memory.\n",use_mem/1024/1024);
+#else
     printf("Using approximately %zuM GPU memory.\n",use_mem/1024/1024);
+#endif
     if (free_mem < use_mem)
        printf("WARNING:  There may not be enough GPU memory for stage 2!\n");
 
