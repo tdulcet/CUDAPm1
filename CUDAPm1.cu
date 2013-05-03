@@ -1,4 +1,4 @@
-char program[] = "CUDAPm1 v0.00";
+char program[] = "CUDAPm1 v0.10";
 /* CUDALucas.c
    Shoichiro Yamada Oct. 2010 
 
@@ -3351,7 +3351,7 @@ void parse_args(int argc, char *argv[], int* q, int* device_numer,
 		/* The rest of the opts are global */
 int main (int argc, char *argv[])
 { 
-  printf("\n");
+  printf("%s\n",program);
   quitting = 0;
 #define THREADS_DFLT 256
 #define CHECKPOINT_ITER_DFLT 10000
