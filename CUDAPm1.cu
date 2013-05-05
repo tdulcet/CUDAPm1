@@ -1791,7 +1791,7 @@ printbits (double *x, int q, int n, int offset, FILE* fp, char *expectedResidue,
     sprintf (s_residue, "%016llx", residue);
 
     printf ("M%d, 0x%s,", q, s_residue);
-    if(o_f) printf(" offset = %d,", offset); 
+    //if(o_f) printf(" offset = %d,", offset); 
     printf (" n = %dK, %s", n/1024, program);
     if (fp)
     {
@@ -2534,8 +2534,9 @@ void next_base(int e, int n)
 
 int stage2_init_param1(int k, int base, int e, int n)
 {
-  int i, j;
+  int i, j, trans = 0;
   mpz_t *exponents; 
+
   exponents = (mpz_t *) malloc((e+1) * sizeof(mpz_t));
   for(j = 0; j <= e; j++) mpz_init(exponents[j]);
   for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2) * base, e);
@@ -2544,7 +2545,7 @@ int stage2_init_param1(int k, int base, int e, int n)
   for(j = 0; j <= e; j++)
 	{
 	    //mpz_out_str (stdout, 10, exponents[j]);
-	    //printf("\nDoing %d iterations.\n",(int) mpz_sizeinbase (exponents[j], 2) + (int) mpz_popcount(exponents[j]));
+	    trans += (int) mpz_sizeinbase (exponents[j], 2) + (int) mpz_popcount(exponents[j]);
       E_to_the_p(&e_data[j * n], g_y, exponents[j], n);
  	    cutilSafeThreadSync();
   }
@@ -2553,39 +2554,35 @@ int stage2_init_param1(int k, int base, int e, int n)
   E_pre_mul(&e_data[e * n], &e_data[e * n], n);
   for(j = 1; j < e; j++) 
     cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[j * n], (cufftDoubleComplex *) &e_data[j * n], CUFFT_INVERSE));
-  return 1;
+  return (2 * trans + 2);
 }
 
-int stage2_init_param2(int num, int last_rp, int base, int e, int n)
+int stage2_init_param2(int num, int cur_rp, int base, int e, int n, uint8 *gaps)
 { 
-  int i = 0, rp = last_rp, k, top = 5;
+  int rp = 1, j = 0, i, trans = 0;
   mpz_t exponent;
   
   mpz_init(exponent);
-  while((base % top) == 0)
+
+  while(j < cur_rp)
   {
-    top += 2;
-    if(top == 9) top += 2;
+    j++;
+    rp += 2 * gaps[j];
   }
-  while( i < num)
+  for(i = 0; i < num; i++)
   {
-    for (k = 3; k < top; k += 2)
-      if(( rp % k) == 0) break;
-    if( k == top) 
-    {
       mpz_ui_pow_ui (exponent, rp, e);
-	    //mpz_out_str (stdout, 10, exponent);
-      //printf("  -  %d ",rp);
-	    //printf("\nDoing %d iterations.\n",(int) mpz_sizeinbase (exponent, 2) + (int) mpz_popcount(exponent));
       E_to_the_p(&rp_data[i * n], g_y, exponent, n);
       E_pre_mul(&rp_data[i * n], &rp_data[i * n], n);
       cutilSafeThreadSync();
-      i++; 
-    }
-    rp += 2;
+	    trans += (int) mpz_sizeinbase (exponent, 2) + (int) mpz_popcount(exponent) + 1;
+      j++;
+      rp += 2 * gaps[j];
   }
+
   mpz_clear(exponent);
-  return rp;
+
+  return (2 * trans + num);
 }
 
 int stage2(double *x, unsigned *x_packed, int q, int n)
@@ -2682,7 +2679,6 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
       k = 0;
     }
   }
-	
 	k = ks + (d >> 1);
   m = k - 1;
   j = 0;
@@ -2701,7 +2697,6 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
       }
       else count0++;
       if (bprimes[m] && bprimes[k]) count2++;
-      //if(m < ks + d) printf("m: %d, k: %d, p[m]: %d, p[k]: %d, rp: %d, p[rp]: %d \n",m,k,bprimes[m],bprimes[k],rp,bprimes[rp]);
       j++;
       if(j == rpt)
       {
@@ -2713,19 +2708,11 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
     rp++;
   }
   printf("Zeros: %d, Ones: %d, Pairs: %d\n", count0, count1, count2);
-	/*for (i = 0; i < 180; i++)
-	{
-		for(j = 0; j < 8; j++)
-		printf("%d, ", (bprimes[i] & two_to_i[j]) / two_to_i[j]);
-		if(i % 4 == 3) printf("\n");
-	}
-	printf("\n");*/
 	
   mpz_init(control);
   mpz_import(control, (ke - ks) / d * rpt / sizeof(bprimes[0]) , -1, sizeof(bprimes[0]), 0, 0, bprimes);
   t = 0;
   m = 0;
-  last = 1;
   ks = ((ks / d) << 1) + 1;
   ke = (ke / d) << 1;
   copy_kernel<<<n / threads, threads>>>(g_y, g_x);
@@ -2734,14 +2721,15 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
   gettimeofday (&time1, NULL);
   do
   {
+    printf("Processing %d - %d of %d relative primes\n", m + 1, m + nrp, rpt);
     num_tran = stage2_init_param1(ks, d, e, n);
-    last = stage2_init_param2(nrp, last, d, e, n); 
+    num_tran += stage2_init_param2(nrp, m, d, e, n, rp_gaps); 
     t = m;
-      gettimeofday (&time0, NULL);
-      time = 1000000.0 * (double)(time0.tv_sec - time1.tv_sec) + time0.tv_usec - time1.tv_usec;
-      ttime += time / 1000000.0;
-      printf("itime: %f, transforms: %d, average: %f\n", time / 1000000.0, num_tran, time / (float) (num_tran * 1000));
-	    num_tran = 0;
+    gettimeofday (&time0, NULL);
+    time = 1000000.0 * (double)(time0.tv_sec - time1.tv_sec) + time0.tv_usec - time1.tv_usec;
+    ttime += time / 1000000.0;
+    printf("itime: %f, transforms: %d, average: %f\n", time / 1000000.0, num_tran, time / (float) (num_tran * 1000));
+	  num_tran = 0;
     for(k = ks; k < ke; k += 2)
     {
       for(j = 0; j < nrp; j++)
@@ -2758,15 +2746,15 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
 	    num_tran += 2 * e;
 	    t += rpt - nrp;
     }
-      gettimeofday (&time1, NULL);
-      time = 1000000.0 * (double)(time1.tv_sec - time0.tv_sec) + time1.tv_usec - time0.tv_usec;
-      ttime += time / 1000000.0;
-      printf("ptime: %f, transforms: %d, average: %f\n", time /  1000000.0, num_tran, time / (float) (num_tran * 1000));
-      m += nrp;
-      printf("ETA: ");
-      print_time_from_seconds((int)(ttime * rpt / m - ttime));
-      printf("\n");
-      fflush(stdout);
+    gettimeofday (&time1, NULL);
+    time = 1000000.0 * (double)(time1.tv_sec - time0.tv_sec) + time1.tv_usec - time0.tv_usec;
+    ttime += time / 1000000.0;
+    printf("ptime: %f, transforms: %d, average: %f\n", time /  1000000.0, num_tran, time / (float) (num_tran * 1000));
+    m += nrp;
+    printf("ETA: ");
+    print_time_from_seconds((int)(ttime * rpt / m - ttime));
+    printf("\n");
+    fflush(stdout);
   }
   while(m < rpt);
   printf("Stage 2 complete, estimated total time = ");
@@ -2811,15 +2799,6 @@ check_pm1 (int q, char *expectedResidue)
       x = init_lucas_packed (x_packed, q, &n, &j, &offset, &total_time); 
     }
     if(!x) exit (2);
-   /* double temp;
-    temp = exp2((q%n) / (double) n);
-    printf("%0.55f\n",ttmp[4]);
-    printf("%0.55f\n",ttmp[5]);
-    printf("%0.55f\n",ttmp[4] * temp);
-    printf("%0.55f\n",ttmp[6]);
-    temp = exp2((q%n - n) / (double) n);
-    printf("%0.55f\n",ttmp[5] * temp);
-    if(ttmp) exit (1);*/
 
     cudaMemGetInfo(&free_mem, &global_mem);
 #ifdef _MSC_VER
