@@ -2814,6 +2814,10 @@ check_pm1 (int q, char *expectedResidue)
     else exit(9);  // should never reach this!
  
     g_nrp = (free_mem/n - 75)/8 - g_e - 1;
+#ifdef _MSC_VER
+    if (g_nrp > (4096/sizeof(double))*1024*1024/n)
+        g_nrp = (4096/sizeof(double))*1024*1024/n; // Max single allocation of 4 GB on Windows?
+#endif 
     if (g_nrp > nrp_max) g_nrp = nrp_max;
     if (g_nrp < 1) g_nrp = 1;
     if ((g_d_commandline == 0) && (g_nrp < 4)) {
