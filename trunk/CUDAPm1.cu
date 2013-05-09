@@ -1359,8 +1359,6 @@ void free_gpu(void)
   cutilSafeCall (cudaFree ((char *) g_err));
   cutilSafeCall (cudaFree ((char *) g_ttp));
   cutilSafeCall (cudaFree ((char *) g_ttp1));
-  cutilSafeCall (cudaFree ((char *) e_data));
-  cutilSafeCall (cudaFree ((char *) rp_data));
   cutilSafeCall (cudaFree ((char *) g_ttmp));
   cutilSafeCall (cudaFree ((char *) g_data));
   cutilSafeCall (cudaFree ((char *) g_numbits));
@@ -2762,6 +2760,8 @@ int stage2(double *x, unsigned *x_packed, int q, int n)
   printf("\n");
 	free(bprimes);
   free(rp_gaps);
+  cutilSafeCall (cudaFree ((char *) e_data));
+  cutilSafeCall (cudaFree ((char *) rp_data));
   mpz_clear (control);
   return 0;
 }
