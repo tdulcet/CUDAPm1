@@ -51,17 +51,17 @@ Both platforms are taken care of in parse.h and parse.c. */
    base code from Takuya OOURA.  */
 /* global variables needed */
 double *ttmp, *ttp;
-double *g_ttp, *g_ttmp, *g_ttp1;
+double *g_ttmp, *g_ttp1;
 double *g_x, *g_y, *g_save, *g_ct;
 double *e_data;
 double *rp_data;
 int *g_xint;
 
 char *size;
-int threads; 
-char *g_numbits;
+int threads1, threads2 = 256, threads3= 128; 
 float *g_err;
-int *g_data; 
+int *g_datai, *g_carryi; 
+long long int *g_datal, *g_carryl;
 cufftHandle plan; 
 
 int quitting, checkpoint_iter, fftlen, tfdepth=0, llsaved=0, s_f, t_f, r_f, d_f, k_f;
@@ -79,13 +79,21 @@ char INIFILE[132] = "CUDAPm1.ini";
 char AID[132]; // Assignment key
 char s_residue[32];
 
+__constant__ double g_ttp_inc[2];
+
+__constant__ int g_qn[2];
+
 /************************ kernels ************************************/
 # define RINT_x86(x) (floor(x+0.5))
 # define RINT(x)  __rintd(x)
 
-#ifdef _MSC_VER
-long long int __double2ll (double);
-#endif
+void set_ttp_inc(double *h_ttp_inc){
+    cudaMemcpyToSymbol(g_ttp_inc, h_ttp_inc, 2 * sizeof(double));
+}
+
+void set_qn(int *h_qn){
+    cudaMemcpyToSymbol(g_qn, h_qn, 2 * sizeof(int));
+}
 
 __global__ void square (int n,
                          double *a,
@@ -406,217 +414,262 @@ __device__ static double __rintd (double z)
   return (y);
 }
 
-
-__device__ static long long int __double2ll (double z)
-{
-  long long int y;
-  
-  asm ("cvt.rni.s64.f64 %0, %1;": "=l" (y):"d" (z));
-  return (y);
-}
-
-__global__ void norm1 (double *g_in,
-                         int *g_data,
-                         double *g_ttp,
-                         double *g_ttmp,
-                         char *g_numbits,
-		                     volatile float *g_err,
-		                     float maxerr,
-		                     int g_err_flag)
-{
-  long long int bigint;
-  int val, numbits, mask, shifted_carry;
-  const int index = blockIdx.x * blockDim.x + threadIdx.x;
-  const int index1 = blockIdx.x << 2;
-  double tval, trint;
-  float ferr;
-  __shared__ int carry[1024 + 1];
- 
-  tval = g_in[index] * g_ttmp[index];
-  trint = RINT (tval);
-  ferr = tval - trint;
-  ferr = fabs (ferr);
-  bigint = trint;
-  if (ferr > maxerr) atomicMax((int*)g_err, __float_as_int(ferr));
-
-  numbits = g_numbits[index]; 
-  mask = -1 << numbits;
-  carry[threadIdx.x + 1] = (int) (bigint >> numbits);
-  val = ((int) bigint) & ~mask;
-  __syncthreads ();
-
-  if (threadIdx.x) val += carry[threadIdx.x];
-  shifted_carry = val - (mask >> 1);
-  val = val - (shifted_carry & mask);
-  carry[threadIdx.x] = shifted_carry >> numbits;
-  __syncthreads ();
-
-  if (threadIdx.x == (blockDim.x - 1))
-  { 
-    if (blockIdx.x == gridDim.x - 1) g_data[2] = carry[threadIdx.x + 1] + carry[threadIdx.x];
-    else   g_data[index1 + 6] =  carry[threadIdx.x + 1] + carry[threadIdx.x]; 
-  }
-
-  if (threadIdx.x) val += carry[threadIdx.x - 1]; 
-  if (threadIdx.x > 1)
-  {
-    if(g_err_flag) g_in[index] = (double) val;
-    else g_in[index] = (double) val * g_ttp[index];
-  }
-  else g_data[index1 + threadIdx.x] = val;
-}
-
 __global__ void norm1a (double *g_in,
                          int *g_data,
-                         double *g_ttp,
+                         int *g_xint,
                          double *g_ttmp,
-                         char *g_numbits,
+                         int *g_carry,
 		                     volatile float *g_err,
 		                     float maxerr,
 		                     int g_err_flag)
 {
   long long int bigint[2];
-  int val[2], numbits[2], mask[2], shifted_carry, i;
+  int val[2], numbits[2] = {g_qn[0],g_qn[0]}, mask[2], shifted_carry;
+  double ttp_temp;
   const int index = (blockIdx.x * blockDim.x + threadIdx.x) << 1;
-  const int index1 = blockIdx.x << 2;
-  double tval, trint;
-  float ferr[2];
+  const int index1 = blockIdx.x << 1;
   __shared__ int carry[1024 + 1];
  
-  for(i = 0; i < 2; i++)
   {
-    tval = g_in[index + i] * g_ttmp[index + i];
-    trint = RINT (tval);
-    ferr[i] = tval - trint;
-    ferr[i] = fabs (ferr[i]);
-    bigint[i] = trint;
-    if (ferr[i] > maxerr) atomicMax((int*) g_err, __float_as_int(ferr[i]));
-    numbits[i] = g_numbits[index + i]; 
-    mask[i] = -1 << numbits[i];
+    double tval[2], trint[2];
+    float ferr[2];
 
+    tval[0] = g_ttmp[index];
+    ttp_temp = g_ttmp[index + 1];
+    trint[0] = g_in[index];
+    trint[1] = g_in[index + 1];
+    if(tval[0] < 0.0)
+    {
+      numbits[0]++;
+      tval[0] = -tval[0];
+    }
+    if(ttp_temp < 0.0)
+    {
+      numbits[1]++;
+      ttp_temp = -ttp_temp;
+    }
+    tval[1] = tval[0] * g_ttp_inc[numbits[0] == g_qn[0]];
+    tval[0] = trint[0] * tval[0];
+    tval[1] = trint[1] * tval[1];
+    trint[0] = RINT (tval[0]);
+    ferr[0] = tval[0] - trint[0];
+    ferr[0] = fabs (ferr[0]);
+    bigint[0] = (long long int) trint[0];
+    trint[1] = RINT (tval[1]);
+    ferr[1] = tval[1] - trint[1];
+    ferr[1] = fabs (ferr[1]);
+    bigint[1] = (long long int) trint[1];
+    mask[0] = -1 << numbits[0];
+    mask[1] = -1 << numbits[1];
+    if(ferr[0] < ferr[1]) ferr[0] = ferr[1];
+    if (ferr[0] > maxerr) atomicMax((int*) g_err, __float_as_int(ferr[0]));
   }
-
-  val[0] = ((int) bigint[0]) & ~mask[0];
-  //carry[threadIdx.x + 1] = (int) (bigint >> numbits1);
-  bigint[0] >>= numbits[0];
-  bigint[1] += bigint[0];
   val[1] = ((int) bigint[1]) & ~mask[1];
   carry[threadIdx.x + 1] = (int) (bigint[1] >> numbits[1]);
+  val[0] = ((int) bigint[0]) & ~mask[0];
+  val[1] += (int) (bigint[0] >> numbits[0]);
   __syncthreads ();
 
   if (threadIdx.x) val[0] += carry[threadIdx.x];
-  shifted_carry = val[0] - (mask[0] >> 1);
-  val[0] = val[0] - (shifted_carry & mask[0]);
-  val[1] += shifted_carry >> numbits[0];
   shifted_carry = val[1] - (mask[1] >> 1);
   val[1] = val[1] - (shifted_carry & mask[1]);
   carry[threadIdx.x] = shifted_carry >> numbits[1];
+  shifted_carry = val[0] - (mask[0] >> 1);
+  val[0] = val[0] - (shifted_carry & mask[0]);
+  val[1] += shifted_carry >> numbits[0];
   __syncthreads ();
 
   if (threadIdx.x == (blockDim.x - 1))
   { 
-    if (blockIdx.x == gridDim.x - 1) g_data[2] = carry[threadIdx.x + 1] + carry[threadIdx.x];
-    else   g_data[index1 + 6] =  carry[threadIdx.x + 1] + carry[threadIdx.x]; 
+    if (blockIdx.x == gridDim.x - 1) g_carry[0] = carry[threadIdx.x + 1] + carry[threadIdx.x];
+    else   g_carry[blockIdx.x + 1] =  carry[threadIdx.x + 1] + carry[threadIdx.x]; 
   }
 
   if (threadIdx.x)
   {
     val[0] += carry[threadIdx.x - 1];
+    {  
+        g_in[index + 1] = (double) val[1] * ttp_temp;
+        ttp_temp *= -g_ttp_inc[numbits[0] == g_qn[0]];
+        g_in[index] = (double) val[0] * ttp_temp;
+    }
     if(g_err_flag)
-      for(i = 0; i < 2; i++)
-        g_in[index + i] = (double) val[i];
-    else
-      for(i = 0; i < 2; i++)
-        g_in[index + i] = (double) val[i] * g_ttp[index + i];
+    {
+      g_xint[index + 1] = val[1];
+      g_xint[index] = val[0];
+    }
   }
   else
   {
-    g_data[index1 + threadIdx.x] = val[threadIdx.x];
-    g_data[index1 + threadIdx.x + 1] = val[threadIdx.x + 1];
+    g_data[index1] = val[0];
+    g_data[index1 + 1] = val[1];
+  }
+}
+
+__global__ void norm1b (double *g_in,
+                         long long int *g_data,
+                         int *g_xint,
+                         double *g_ttmp,
+                         long long int *g_carry,
+		                     volatile float *g_err,
+		                     float maxerr,
+		                     int g_err_flag)
+{
+  long long int bigint[2], shifted_carry;
+  int  numbits[2] = {g_qn[0],g_qn[0]}, mask[2];
+  double ttp_temp;
+  const int index = (blockIdx.x * blockDim.x + threadIdx.x) << 1;
+  const int index1 = blockIdx.x << 1;
+  __shared__ long long int carry[1024 + 1];
+ 
+  {
+    double tval[2], trint[2];
+    float ferr[2];
+
+    tval[0] = g_ttmp[index];
+    ttp_temp = g_ttmp[index + 1];
+    trint[0] = g_in[index];
+    trint[1] = g_in[index + 1];
+    if(tval[0] < 0.0)
+    {
+      numbits[0]++;
+      tval[0] = -tval[0];
+    }
+    if(ttp_temp < 0.0)
+    {
+      numbits[1]++;
+      ttp_temp = -ttp_temp;
+    }
+    tval[1] = tval[0] * g_ttp_inc[numbits[0] == g_qn[0]];
+    tval[0] = trint[0] * tval[0];
+    tval[1] = trint[1] * tval[1];
+    trint[0] = RINT (tval[0]);
+    ferr[0] = tval[0] - trint[0];
+    ferr[0] = fabs (ferr[0]);
+    bigint[0] = (long long int) trint[0];
+    trint[1] = RINT (tval[1]);
+    ferr[1] = tval[1] - trint[1];
+    ferr[1] = fabs (ferr[1]);
+    bigint[1] = (long long int) trint[1];
+    mask[0] = -1 << numbits[0];
+    mask[1] = -1 << numbits[1];
+    if(ferr[0] < ferr[1]) ferr[0] = ferr[1];
+    if (ferr[0] > maxerr) atomicMax((int*) g_err, __float_as_int(ferr[0]));
+  }
+  bigint[0] *= 3;
+  bigint[1] *= 3;
+  carry[threadIdx.x + 1] = (bigint[1] >> numbits[1]);
+  bigint[1] = bigint[1] & ~mask[1];
+  bigint[1] += bigint[0] >> numbits[0];
+  bigint[0] =  bigint[0] & ~mask[0];
+  __syncthreads ();
+
+  if (threadIdx.x) bigint[0] += carry[threadIdx.x];
+  shifted_carry = bigint[1] - (mask[1] >> 1);
+  bigint[1] = bigint[1] - (shifted_carry & mask[1]);
+  carry[threadIdx.x] = shifted_carry >> numbits[1];
+  shifted_carry = bigint[0] - (mask[0] >> 1);
+  bigint[0] = bigint[0] - (shifted_carry & mask[0]);
+  bigint[1] += shifted_carry >> numbits[0];
+  __syncthreads ();
+
+  if (threadIdx.x == (blockDim.x - 1))
+  { 
+    if (blockIdx.x == gridDim.x - 1) g_carry[0] = carry[threadIdx.x + 1] + carry[threadIdx.x];
+    else   g_carry[blockIdx.x + 1] =  carry[threadIdx.x + 1] + carry[threadIdx.x]; 
+  }
+
+  if (threadIdx.x)
+  {
+    bigint[0] += carry[threadIdx.x - 1];
+    {  
+        g_in[index + 1] = (double) bigint[1] * ttp_temp;
+        ttp_temp *= -g_ttp_inc[numbits[0] == g_qn[0]];
+        g_in[index] = (double) bigint[0] * ttp_temp;
+    }
+    if(g_err_flag)
+    {
+      g_xint[index + 1] = bigint[1];
+      g_xint[index] = bigint[0];
+    }
+  }
+  else
+  {
+    g_data[index1] = bigint[0];
+    g_data[index1 + 1] = bigint[1];
   }
 }
 
  
-
 __global__ void
-normalize2_kernel (double *g_x, int g_N, int threads, int *g_data, double *g_ttp1, int g_err_flag)
+norm2a (double *g_x, int *g_xint, int g_N, int threads1, int *g_data, int *g_carry, double *g_ttp1, int g_err_flag)
 {
   const int threadID = blockIdx.x * blockDim.x + threadIdx.x;
-  const int threadID1 = threadID << 2;
-  const int threadID2 = threadID << 1;
-  const int j = threads * threadID;
-  double temp0, temp1;
-  int mask, shifted_carry, numbits;
+  const int threadID1 = threadID << 1;
+  const int j = (threads1 * threadID) << 1;
+  int temp0, temp1;
+  int mask, shifted_carry, numbits= g_qn[0];
+  double temp;
 
   if (j < g_N)
     {
-      temp0 = g_data[threadID1] + g_data[threadID1 + 2];
-      numbits = g_data[threadID1 + 3];
+      temp0 = g_data[threadID1] + g_carry[threadID];
+      temp1 = g_data[threadID1 + 1];
+      temp = g_ttp1[threadID];
+      if(temp < 0.0)
+      {
+        numbits++;
+        temp = -temp;
+      }
       mask = -1 << numbits;
       shifted_carry = temp0 - (mask >> 1) ;
       temp0 = temp0 - (shifted_carry & mask);
-      temp1 = g_data[threadID1 + 1] + (shifted_carry >> numbits);
-      if(!g_err_flag)
+      temp1 += (shifted_carry >> numbits);
       {
-        g_x[j] = temp0 * g_ttp1[threadID2];
-        g_x[j + 1] = temp1 * g_ttp1[threadID2 + 1];
+        g_x[j + 1] = temp1 * temp;
+        temp *= -g_ttp_inc[numbits == g_qn[0]];
+        g_x[j] = temp0 * temp;
       }
-      else
+      if(g_err_flag)
       {
-        g_x[j] = temp0;
-        g_x[j + 1] = temp1;
+        g_xint[j + 1] = temp1;
+        g_xint[j] = temp0;
       }
     }
 }
 
 __global__ void
-normalize3_kernel (double *g_in,  int *g_data, double *g_ttp, char *g_numbits,
-		  volatile float *g_err, float maxerr)
-{
-  int val, numbits, mask, shifted_carry;
-  const int index = blockIdx.x * blockDim.x + threadIdx.x;
-  const int index1 = blockIdx.x << 2;
-  __shared__ int carry[1024 + 1];
- 
-  val = (int) __double2ll (g_in[index]);
-  val *= 3;
-  numbits = g_numbits[index]; 
-  mask = -1 << numbits;
-  shifted_carry = val - (mask >> 1);
-  val = val - (shifted_carry & mask);
-  carry[threadIdx.x] = shifted_carry >> numbits;
-  __syncthreads ();
-
-  if (threadIdx.x == (blockDim.x - 1))
-  { if (blockIdx.x == gridDim.x - 1) g_data[2] = carry[threadIdx.x];
-    else   g_data[index1 + 6] =  carry[threadIdx.x];
-  }
-
-  if (threadIdx.x) val += carry[threadIdx.x - 1]; 
-  if (threadIdx.x > 1) g_in[index] = (double) val * g_ttp[index];
-  else g_data[index1 + threadIdx.x] = val;
-}
-
-__global__ void
-normalize4_kernel (double *g_x, int g_N, int threads, int *g_data, double *g_ttp1)
+norm2b (double *g_x, int *g_xint, int g_N, int threads1, long long int *g_data, long long int *g_carry, double *g_ttp1, int g_err_flag)
 {
   const int threadID = blockIdx.x * blockDim.x + threadIdx.x;
-  const int threadID1 = threadID << 2;
-  const int threadID2 = threadID << 1;
-  const int j = threads * threadID;
-  double temp0, temp1;
-  int mask, shifted_carry, numbits;
-
+  const int threadID1 = threadID << 1;
+  const int j = (threads1 * threadID) << 1;
+  long long int shifted_carry, temp0, temp1;
+  int mask,  numbits = g_qn[0];
+  double temp;
+  
   if (j < g_N)
     {
-      temp0 = g_data[threadID1] + g_data[threadID1 + 2];
-      numbits = g_data[threadID1 + 3];
+      temp0 = g_data[threadID1] + g_carry[threadID];
+      temp1 = g_data[threadID1 + 1];
+      temp = g_ttp1[threadID];
+      if(temp < 0.0)
+      {
+        numbits++;
+        temp = -temp;
+      }
       mask = -1 << numbits;
       shifted_carry = temp0 - (mask >> 1) ;
       temp0 = temp0 - (shifted_carry & mask);
-      temp1 = g_data[threadID1 + 1] + (shifted_carry >> numbits);
-      g_x[j] = temp0 * g_ttp1[threadID2];
-      g_x[j + 1] = temp1 * g_ttp1[threadID2 + 1];
+      temp1 = temp1 + (shifted_carry >> numbits);
+      g_x[j + 1] = temp1 * temp;
+      temp *= -g_ttp_inc[numbits == g_qn[0]];
+      g_x[j] = temp0 * temp;
+      if(g_err_flag)
+      {
+        g_xint[j + 1] = temp1;
+        g_xint[j] = temp0;
+      }
     }
 }
 
@@ -993,22 +1046,21 @@ lucas_square (double *x, int q, int n, int iter, int last, float* maxerr, int er
     cutilSafeCall (cudaMemcpy (&terr, g_err, sizeof (float), cudaMemcpyDeviceToHost));
     if(terr > *maxerr) *maxerr = terr;
   }
- {
-    cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_x, (cufftDoubleComplex *) g_x, CUFFT_INVERSE));
-    square <<< n / 512, 128 >>> (n, g_x, g_ct);
-    cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_x, (cufftDoubleComplex *) g_x, CUFFT_INVERSE));
-    norm1 <<<n / (threads), threads >>> 
-                    (g_x, g_data, g_ttp, g_ttmp, g_numbits, g_err, *maxerr, bit);
-    normalize2_kernel <<< ((n + threads - 1) / threads + 127) / 128, 128 >>> 
-                     (g_x, n, threads, g_data, g_ttp1, bit);
-    if(bit)
-    {
-      normalize3_kernel <<<n / threads, threads >>> 
-                    (g_x, g_data, g_ttp, g_numbits, g_err, *maxerr);
-      normalize4_kernel <<< ((n + threads - 1) / threads + 127) / 128, 128 >>> 
-                     (g_x, n, threads, g_data, g_ttp1);
-    }
+  cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_x, (cufftDoubleComplex *) g_x, CUFFT_INVERSE));
+  square <<< n / (4 * threads2), threads2 >>> (n, g_x, g_ct);
+  cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_x, (cufftDoubleComplex *) g_x, CUFFT_INVERSE));
+    
+  if(!bit)
+  {
+    norm1a <<<n / (2 * threads1), threads1 >>> (g_x, g_datai, g_xint, g_ttmp, g_carryi, g_err, *maxerr, 0);
+    norm2a <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_x, g_xint, n, threads1, g_datai, g_carryi, g_ttp1, 0);
   }
+  else
+  {
+    norm1b <<<n / (2 * threads1), threads1 >>> (g_x, g_datal, g_xint, g_ttmp, g_carryl, g_err, *maxerr, 0);
+    norm2b <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_x, g_xint, n, threads1, g_datal, g_carryl, g_ttp1, 0);
+  }
+
   if (error_flag)
   {
     cutilSafeCall (cudaMemcpy (&terr, g_err, sizeof (float), cudaMemcpyDeviceToHost));
@@ -1036,53 +1088,47 @@ void init_x(double *x, unsigned *x_packed, int q, int n, int *stage)
   cudaMemcpy (g_x, x, sizeof (double) * n , cudaMemcpyHostToDevice);
 }
 
-void E_init_d(double *g, double value, int length)
+void E_init_d(double *g, double value, int n)
 {
   double x[1] = {value};
   
-  cutilSafeCall (cudaMemset (g, 0.0, sizeof (double) * length));
+  cutilSafeCall (cudaMemset (g, 0.0, sizeof (double) * n));
   cudaMemcpy (g, x, sizeof (double) , cudaMemcpyHostToDevice);
 }
 
-void E_pre_mul(double *g_out, double *g_in, int length)
+void E_pre_mul(double *g_out, double *g_in, int n)
 {
   cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_in, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
-  pre_mul <<<length / 512, 128>>> (length, g_out, g_ct);
+  pre_mul <<<n / (4 * threads2), threads2>>> (n, g_out, g_ct);
 }
 
-void E_mul(double *g_out, double *g_in1, double *g_in2, int length, float err, int fft_f)
+void E_mul(double *g_out, double *g_in1, double *g_in2, int n, float err, int fft_f)
 {
   
   if(fft_f) cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_in1, (cufftDoubleComplex *) g_in1, CUFFT_INVERSE));
-  mult3 <<<length / 512, 128>>> (g_out, g_in1, g_in2, g_ct, length);
+  mult3 <<<n / (4 * threads2), threads2>>> (g_out, g_in1, g_in2, g_ct, n);
   cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_out, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
-  norm1 <<<length / threads, threads >>> 
-                    (g_out, g_data, g_ttp, g_ttmp, g_numbits, g_err, err, 0);
-  normalize2_kernel <<< ((length + threads - 1) / threads + 127) / 128, 128 >>> 
-                     (g_out, length, threads, g_data, g_ttp1, 0);
+  norm1a <<<n / (2 * threads1), threads1 >>> (g_out, g_datai, g_xint, g_ttmp, g_carryi, g_err, err, 0);
+  norm2a <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_out, g_xint, n, threads1, g_datai, g_carryi, g_ttp1, 0);
 }
 
-void E_sub_mul(double *g_out, double *g_in1, double *g_in2, double *g_in3, int length, float maxerr)
+void E_sub_mul(double *g_out, double *g_in1, double *g_in2, double *g_in3, int n, float err)
 {
   
   cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_in1, (cufftDoubleComplex *) g_in1, CUFFT_INVERSE));
-  sub_mul <<<length / 512, 128>>> (g_out, g_in1, g_in2, g_in3, g_ct, length);
+  sub_mul <<<n / (4 * threads2), threads2>>> (g_out, g_in1, g_in2, g_in3, g_ct, n);
   cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_out, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
-  norm1 <<<length / threads, threads >>> 
-                    (g_out, g_data, g_ttp, g_ttmp, g_numbits, g_err, maxerr, 0);
-  normalize2_kernel <<< ((length + threads - 1) / threads + 127) / 128, 128 >>> 
-                     (g_out, length, threads, g_data, g_ttp1, 0);
+  norm1a <<<n / (2 * threads1), threads1 >>> (g_out, g_datai, g_xint, g_ttmp, g_carryi, g_err, err, 0);
+  norm2a <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_out, g_xint, n, threads1, g_datai, g_carryi, g_ttp1, 0);
 }
 
-void E_half_mul(double *g_out, double *g_in1, double *g_in2, int length, float err)
+void E_half_mul(double *g_out, double *g_in1, double *g_in2, int n, float err)
 {
   
-  mult2 <<<length / 512, 128>>> (g_out, g_in1, g_in2, g_ct, length);
+  mult2 <<<n / (4 * threads2), threads2>>> (g_out, g_in1, g_in2, g_ct, n);
   cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_out, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
-  norm1 <<<length / threads, threads >>> 
-                    (g_out, g_data, g_ttp, g_ttmp, g_numbits, g_err, err, 0);
-  normalize2_kernel <<< ((length + threads - 1) / threads + 127) / 128, 128 >>> 
-                     (g_out, length, threads, g_data, g_ttp1, 0);
+  norm1a <<<n / (2 * threads1), threads1 >>> (g_out, g_datai, g_xint, g_ttmp, g_carryi, g_err, err, 0);
+  norm2a <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_out, g_xint, n, threads1, g_datai, g_carryi, g_ttp1, 0);
 }
 
 int E_to_the_p(double *g_out, double *g_in, mpz_t p, int n, int trans, float *err)
@@ -1098,28 +1144,24 @@ int E_to_the_p(double *g_out, double *g_in, mpz_t p, int n, int trans, float *er
 
   E_pre_mul(g_save, g_in, n);
   trans++;
-  if(g_out != g_in) copy_kernel<<<n / threads, threads>>>(g_out, g_in);
+  if(g_out != g_in) copy_kernel<<<n / threads1, threads1>>>(g_out, g_in);
 
   for(j = 2; j <= last && !quitting; j++)
   {
     cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_out, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
-    square <<< n / 512, 128 >>> (n, g_out, g_ct);
+    square <<< n / (4 * threads2), threads2 >>> (n, g_out, g_ct);
     cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_out, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
-    norm1 <<<n / threads, threads >>> 
-                    (g_out, g_data, g_ttp, g_ttmp, g_numbits, g_err, *err, 0);
-    normalize2_kernel <<< ((n + threads - 1) / threads + 127) / 128, 128 >>> 
-                     (g_out, n, threads, g_data, g_ttp1, 0);
+    norm1a <<<n / (2 * threads1), threads1 >>> (g_out, g_datai, g_xint, g_ttmp, g_carryi, g_err, *err, 0);
+    norm2a <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_out, g_xint, n, threads1, g_datai, g_carryi, g_ttp1, 0);
     trans += 2;
     if(j == 2) cutilSafeCall (cudaMemcpy (err, g_err, sizeof (float), cudaMemcpyDeviceToHost));
     if(mpz_tstbit (p, last - j)) 
     {
       cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_out, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
-      mult2 <<< n / 512, 128 >>> (g_out, g_out, g_save, g_ct, n);
+      mult2 <<< n / (4 * threads2), threads2 >>> (g_out, g_out, g_save, g_ct, n);
       cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_out, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
-      norm1 <<<n / threads, threads >>> 
-                    (g_out, g_data, g_ttp, g_ttmp, g_numbits, g_err, *err, 0);
-      normalize2_kernel <<< ((n + threads - 1) / threads + 127) / 128, 128 >>> 
-                     (g_out, n, threads, g_data, g_ttp1, 0);
+      norm1a <<<n / (2 * threads1), threads1 >>> (g_out, g_datai, g_xint, g_ttmp, g_carryi, g_err, *err, 0);
+      norm2a <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_out, g_xint, n, threads1, g_datai, g_carryi, g_ttp1, 0);
       trans += 2;
     }
     if(trans - checkerror > 200)
@@ -1151,8 +1193,8 @@ makect (int nc, double *c)
 {
   int j;
   double d = (double) (nc << 1);
-  c[0] = cospi (nc / d);
-  for (j = 1; j < nc; j++) c[j] = 0.5 * cospi (j / d);
+
+  for (j = 1; j <= nc; j++) c[j] = 0.5 * cospi (j / d);
 }
 
 void get_weights(int q, int n)
@@ -1189,63 +1231,65 @@ void alloc_gpu_mem(int n)
   cutilSafeCall (cudaMalloc ((void **) &g_ct, sizeof (double) * n / 4));
   cutilSafeCall (cudaMalloc ((void **) &g_xint, sizeof (int) * n ));
   cutilSafeCall (cudaMalloc ((void **) &g_err, sizeof (float)));
-  cutilSafeCall (cudaMalloc ((void **) &g_ttp, sizeof (double) * n));
   cutilSafeCall (cudaMalloc ((void **) &g_ttmp, sizeof (double) * n));
-  cutilSafeCall (cudaMalloc ((void **) &g_numbits, sizeof (char) * n));
-  cutilSafeCall (cudaMalloc ((void **) &g_ttp1, sizeof (double) * 2 * n / threads));
-  cutilSafeCall (cudaMalloc ((void **) &g_data, sizeof (int) * 4 * n / threads));
+  cutilSafeCall (cudaMalloc ((void **) &g_ttp1, sizeof (double) * 2 * n / threads1));
+  cutilSafeCall (cudaMalloc ((void **) &g_datai, sizeof (int) * 2 * n / threads1));
+  cutilSafeCall (cudaMalloc ((void **) &g_datal, sizeof (long long int) * 2 * n / threads1));
   cutilSafeCall (cudaMemset (g_err, 0, sizeof (float)));
   cutilSafeCall (cudaMalloc ((void **) &g_save, sizeof (double) * n));
+  cutilSafeCall (cudaMalloc ((void **) &g_carryl, sizeof (long long int) * n / threads1));
+  cutilSafeCall (cudaMalloc ((void **) &g_carryi, sizeof (int) * n / threads1));
 }
 
 void write_gpu_data(int q, int n)
 {
   double *s_ttp, *s_ttmp, *s_ttp1, *s_ct;
-  char *s_numbits;
-  int *s_data;
-  int i, j, qn = q / n;
+  int i, j, qn = q / n, b = q % n;;
+  double *h_ttp_inc;
+  int *h_qn;
 
   s_ct = (double *) malloc (sizeof (double) * (n / 4));
   s_ttp = (double *) malloc (sizeof (double) * (n));
   s_ttmp = (double *) malloc (sizeof (double) * (n));
-  s_numbits = (char *) malloc (sizeof (char) * (n));
-  s_ttp1 = (double *) malloc (sizeof (double) * 2 * (n / threads));
-  s_data = (int *) malloc (sizeof (int) * (4 * n / threads));
+  s_ttp1 = (double *) malloc (sizeof (double) * 2 * (n / threads1));
+  h_ttp_inc = (double *) malloc (sizeof (double) * 2);
+  h_qn = (int *) malloc (sizeof (int) * 2);
 
   for (j = 0; j < n; j++)
   {
     s_ttp[j] = ttp[j];
-    s_ttmp[j] = ttmp[j] * 2.0 / n; 
-    if(j % 2) s_ttmp[j] = -s_ttmp[j]; 
-    s_numbits[j] = qn + size[j];
+    if(j % 2 == 0) s_ttmp[j] = ttmp[j] * 2.0 / n; 
+    else s_ttmp[j] = ttp[j];
+    if(size[j]) s_ttmp[j] = -s_ttmp[j];
   }
 
-  for (i = 0, j = 0; i < n; i++)
+  for (i = 0, j = 0; i < n ; i += 2 * threads1)
   {
-    if ((i % threads) == 0)
-    {
-      s_ttp1[2 * j] = s_ttp[i];
-      s_ttp1[2 * j + 1] = s_ttp[i + 1];
-      s_data[4 * j + 3] = s_numbits[i];
+      s_ttp1[j] = s_ttp[i + 1];
+      if(size[i]) s_ttp1[j] = -s_ttp1[j];
       j++;
-    }
   }
-
-  makect (n / 4, s_ct);
   
-  cudaMemcpy (g_ttmp, s_ttmp, sizeof (double) * n, cudaMemcpyHostToDevice);
-  cudaMemcpy (g_numbits, s_numbits, sizeof (char) * n, cudaMemcpyHostToDevice);
-  cudaMemcpy (g_ttp, s_ttp, sizeof (double) * n, cudaMemcpyHostToDevice);
-  cudaMemcpy (g_ttp1, s_ttp1, sizeof (double) * 2 * n / threads, cudaMemcpyHostToDevice);
-  cudaMemcpy (g_data, s_data, sizeof (int) * 4 * n / threads, cudaMemcpyHostToDevice);
-  cudaMemcpy (g_ct, s_ct, sizeof (double) * (n / 4), cudaMemcpyHostToDevice);
+  makect (n / 4, s_ct);
+
+  h_ttp_inc[0] = -exp2((b-n) / (double) n);
+  h_ttp_inc[1] = -exp2(b / (double) n);
+  set_ttp_inc(h_ttp_inc);
+  h_qn[0] = qn;
+  h_qn[1] = n;
+  set_qn(h_qn);
+  
+  
+  cutilSafeCall(cudaMemcpy (g_ttmp, s_ttmp, sizeof (double) * n, cudaMemcpyHostToDevice));
+  cutilSafeCall(cudaMemcpy (g_ttp1, s_ttp1, sizeof (double) * 2 * n / threads1, cudaMemcpyHostToDevice));
+  cutilSafeCall(cudaMemcpy (g_ct, s_ct, sizeof (double) * (n / 4), cudaMemcpyHostToDevice));
 
   free ((char *) s_ct);
   free ((char *) s_ttp);
   free ((char *) s_ttmp);
   free ((char *) s_ttp1);
-  free ((char *) s_data);
-  free ((char *) s_numbits);
+  free ((char *) h_ttp_inc);
+  free ((char *) h_qn);
 }
 
 void free_host (double *x)
@@ -1264,12 +1308,13 @@ void free_gpu(void)
   cutilSafeCall (cudaFree ((char *) g_ct));
   cutilSafeCall (cudaFree ((char *) g_xint));
   cutilSafeCall (cudaFree ((char *) g_err));
-  cutilSafeCall (cudaFree ((char *) g_ttp));
   cutilSafeCall (cudaFree ((char *) g_ttp1));
   cutilSafeCall (cudaFree ((char *) g_ttmp));
-  cutilSafeCall (cudaFree ((char *) g_data));
-  cutilSafeCall (cudaFree ((char *) g_numbits));
+  cutilSafeCall (cudaFree ((char *) g_datai));
+  cutilSafeCall (cudaFree ((char *) g_datal));
   cutilSafeCall (cudaFree ((char *) g_save));
+  cutilSafeCall (cudaFree ((char *) g_carryl));
+  cutilSafeCall (cudaFree ((char *) g_carryi));
 }
 
 void close_lucas (double *x)
@@ -1859,10 +1904,10 @@ double* init_lucas_packed(unsigned * x_packed, int q , int *n, int *j, int *stag
   if(old_n > COUNT) *n = old_n;
   else if (new_test || old_n) *n = new_n;
 
-  if ((*n / threads) > 65535)
+  if ((*n / threads1) > 65535)
   {
-    fprintf (stderr, "over specifications Grid = %d\n", (int) *n / threads);
-    fprintf (stderr, "try increasing threads (%d) or decreasing FFT length (%dK)\n\n",  threads, *n / 1024);
+    fprintf (stderr, "over specifications Grid = %d\n", (int) *n / threads1);
+    fprintf (stderr, "try increasing threads (%d) or decreasing FFT length (%dK)\n\n",  threads1, *n / 1024);
     return NULL;
   }
   if (q < *n)
@@ -2532,11 +2577,11 @@ int stage2_init_param3(int e, int n, int trans, float *err)
     if(i > 0)
     {
       cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[2 * i * n], (cufftDoubleComplex *) &e_data[2 * i * n], CUFFT_INVERSE));
-	    copy_kernel<<<n / threads, threads>>>(&e_data[(2 * i - 1) * n], &e_data[2 * i * n]);
+	    copy_kernel<<<n / threads1, threads1>>>(&e_data[(2 * i - 1) * n], &e_data[2 * i * n]);
 	    trans++;
     }
   }
-  pre_mul <<<n / 512, 128>>> (n, &e_data[e * n], g_ct);
+  pre_mul <<<n / (4 * threads2), threads2>>> (n, &e_data[e * n], g_ct);
   E_pre_mul(&e_data[0], &e_data[0], n);
   trans++;
   mpz_clear(exponent);
@@ -2572,21 +2617,6 @@ int next_base1(int k, int e, int n, int trans, float *err)
   return trans;
 }
 
-
-
-int next_base(int e, int n, int trans, float err)
-{ 
-  int j;
-  
-  E_half_mul(&e_data[(e - 1) * n], &e_data[(e - 1) * n], &e_data[e * n], n, err);
-  for(j = 1; j < e - 1; j++) E_mul(&e_data[(e - j - 1) * n], &e_data[(e - j) * n], &e_data[(e - j - 1) * n], n, err, 1);
-  cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[1 * n], (cufftDoubleComplex *) &e_data[1 * n], CUFFT_INVERSE));
-  E_half_mul(&e_data[0], &e_data[1 * n], &e_data[0], n, err);
-  E_pre_mul(&e_data[0], &e_data[0], n);
-  trans += 2 * e;
-  return trans;
-}
-
 int stage2_init_param1(int k, int base, int e, int n, int trans, float *err)
 {
   int i, j;
@@ -2599,19 +2629,13 @@ int stage2_init_param1(int k, int base, int e, int n, int trans, float *err)
   for(j = 0; j < e; j++)
     for(i = e; i > j; i--) mpz_sub(exponents[i], exponents[i-1], exponents[i]);
   trans = E_to_the_p(g_y, g_y, exponents[e + 1], n, trans, err);
-  for(j = 0; j <= e; j++)
-	{
-	    //mpz_out_str (stdout, 10, exponents[j]);
-      //printf("\n");
-      trans = E_to_the_p(&e_data[j * n], g_y, exponents[j], n, trans, err);
-  }
+  for(j = 0; j <= e; j++) trans = E_to_the_p(&e_data[j * n], g_y, exponents[j], n, trans, err);
   for(j = 0; j <= e + 1; j++) mpz_clear(exponents[j]);
   E_pre_mul(&e_data[0], &e_data[0], n);
   E_pre_mul(&e_data[e * n], &e_data[e * n], n);
   for(j = 1; j < e; j++)
-  {
     cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[j * n], (cufftDoubleComplex *) &e_data[j * n], CUFFT_INVERSE));
-  }
+
   trans += e + 1;
   return trans;
 }
@@ -2659,7 +2683,7 @@ int stage2_init_param3(int num, int cur_rp, int base, int e, int n, uint8 *gaps,
       k += 2;
     }
   else trans = stage2_init_param1(rp, 1, e, n, trans, err);
-  copy_kernel<<<n / threads, threads>>>(&rp_data[0], &e_data[0]);
+  copy_kernel<<<n / threads1, threads1>>>(&rp_data[0], &e_data[0]);
   k = rp + 2;
   for(i = 1; i < num; i++)
   {
@@ -2670,7 +2694,7 @@ int stage2_init_param3(int num, int cur_rp, int base, int e, int n, uint8 *gaps,
       trans = next_base1(k, e, n, trans, err);
       k += 2;
     }
-    copy_kernel<<<n / threads, threads>>>(&rp_data[i * n], &e_data[0]);
+    copy_kernel<<<n / threads1, threads1>>>(&rp_data[i * n], &e_data[0]);
 
   }
 
@@ -2734,12 +2758,10 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
   int prime, prime_pair;
   uint8 *rp_gaps = NULL;
   int sprimes[] = {3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 43, 47, 53, 0};
-  //int *sprimes1;
   uint8 two_to_i[] = {1, 2, 4, 8, 16, 32, 64, 128};
   int count0 = 0, count1 = 0, count2 = 0;
   mpz_t control;
   timeval time0, time1;
-  int p_d;
   
  int end = (q + 31) / 32;
  if(x_packed[end + 10] == 0)
@@ -2765,31 +2787,27 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
  
  if(d % 2310 == 0)
 	{
-	  p_d = 13;
 	  i = 4;
 	  rpt = 480 * d / 2310;
 	}
 	else if(d % 210 == 0)
 	{
-	  p_d = 11;
 	  i = 3;
 	  rpt =  48 * d / 210;
 	}
 	else if(d % 30 == 0)
 	{
-	  p_d = 7;
 	  i = 2;
 	  rpt = 8 * d / 30;
 	}
 	else 
 	{
-	  p_d = 5;
 	  i = 1;
 	  rpt = 2 * d / 6;
 	}
   
-  if(b1 * p_d * 53 < b2) ks = ((((b1 * 53 + 1) >> 1) + d - 1) / d - 1) * d;
-  else if(b1 * p_d < b2) ks = ((((b2 / p_d + 1) >> 1) + d - 1) / d - 1) * d;
+  if(b1 * sprimes[i] * 53 < b2) ks = ((((b1 * 53 + 1) >> 1) + d - 1) / d - 1) * d;
+  else if(b1 * sprimes[i] < b2) ks = ((((b2 / sprimes[i] + 1) >> 1) + d - 1) / d - 1) * d;
   else ks = ((((b1 + 1) >> 1) + d - 1) / d - 1) * d;
   ke = ((((b2 + 1) >> 1) + d - 1) / d) * d;
 
@@ -2883,8 +2901,9 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
 
   mpz_init(control);
   mpz_import(control, (ke - ks) / d * rpt / sizeof(bprimes[0]) , -1, sizeof(bprimes[0]), 0, 0, bprimes);
+	free(bprimes);
 
-  copy_kernel<<<n / threads, threads>>>(g_y, g_x);
+  copy_kernel<<<n / threads1, threads1>>>(g_y, g_x);
   unpack_bits(x, x_packed, q, n);
   balance_digits(x, q, n);
   cudaMemcpy (g_x, x, sizeof (double) * n , cudaMemcpyHostToDevice);
@@ -3050,7 +3069,6 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
   else printf("Quitting, estimated time spent = ");
   print_time_from_seconds((int) itime + ptime);
   printf("\n");
-	free(bprimes);
   free(rp_gaps);
   cutilSafeCall (cudaFree ((char *) e_data));
   cutilSafeCall (cudaFree ((char *) rp_data));
@@ -3437,7 +3455,7 @@ check (int q, char *expectedResidue)
           }
 		      if (t_f)
 		      {
-		        copy_kernel <<< n / 128, 128 >>> (g_save, g_x);
+		        copy_kernel <<< n / threads1, threads1 >>> (g_save, g_x);
 		        j_save = j;
 		        offset_save = offset;
 		      }
@@ -3585,7 +3603,7 @@ int main (int argc, char *argv[])
   int q = -1;
   int device_number = -1, f_f = 0;
   checkpoint_iter = -1;
-  threads = -1;
+  threads1 = -1;
   fftlen = -1;
   s_f = t_f = d_f = k_f = -1;
   polite_f = polite = -1;
@@ -3604,7 +3622,7 @@ int main (int argc, char *argv[])
   {  
    if( checkpoint_iter < 1 && 		!IniGetInt(INIFILE, "CheckpointIterations", &checkpoint_iter, CHECKPOINT_ITER_DFLT) )
     /*fprintf(stderr, "Warning: Couldn't parse ini file option CheckpointIterations; using default: %d\n", CHECKPOINT_ITER_DFLT)*/;
-   if( threads < 1 && 			!IniGetInt(INIFILE, "Threads", &threads, THREADS_DFLT) )
+   if( threads1 < 1 && 			!IniGetInt(INIFILE, "Threads", &threads1, THREADS_DFLT) )
     fprintf(stderr, "Warning: Couldn't parse ini file option Threads; using default: %d\n", THREADS_DFLT);
    if( s_f < 0 && 			!IniGetInt(INIFILE, "SaveAllCheckpoints", &s_f, S_F_DFLT) )
     /*fprintf(stderr, "Warning: Couldn't parse ini file option SaveAllCheckpoints; using default: off\n")*/;
@@ -3634,7 +3652,7 @@ int main (int argc, char *argv[])
     {
       fprintf(stderr, "Warning: Couldn't find .ini file. Using defaults for non-specified options.\n");
       if( checkpoint_iter < 1 ) checkpoint_iter = CHECKPOINT_ITER_DFLT;
-      if( threads < 1 ) threads = THREADS_DFLT;
+      if( threads1 < 1 ) threads1 = THREADS_DFLT;
       if( fftlen < 0 ) fftlen = 0;
       if( s_f < 0 ) s_f = S_F_DFLT;
       if( t_f < 0 ) t_f = T_F_DFLT;
@@ -3655,8 +3673,8 @@ int main (int argc, char *argv[])
   } else {
     polite_f = 1;
   }
-  if (threads != 32 && threads != 64 && threads != 128
-	      && threads != 256 && threads != 512 && threads != 1024)
+  if (threads1 != 32 && threads1 != 64 && threads1 != 128
+	      && threads1 != 256 && threads1 != 512 && threads1 != 1024)
   {
     fprintf(stderr, "Error: thread count is invalid.\n");
     fprintf(stderr, "Threads must be 2^k, 5 <= k <= 10.\n\n");
@@ -3909,9 +3927,9 @@ while (argc > 1)
 	      fprintf (stderr, "can't parse -threads option\n\n");
 	      exit (2);
 	    }
-	  threads = atoi (argv[2]);
-	  if (threads != 32 && threads != 64 && threads != 128
-	      && threads != 256 && threads != 512 && threads != 1024)
+	  threads1 = atoi (argv[2]);
+	  if (threads1 != 32 && threads1 != 64 && threads1 != 128
+	      && threads1 != 256 && threads1 != 512 && threads1 != 1024)
 	    {
 	      fprintf(stderr, "Error: thread count is invalid.\n");
 	      fprintf(stderr, "Threads must be 2^k, 5 <= k <= 10.\n\n");
