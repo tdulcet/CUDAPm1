@@ -55,8 +55,7 @@ double *g_ttp, *g_ttmp, *g_ttp1;
 double *g_x, *g_y, *g_save, *g_ct;
 double *e_data;
 double *rp_data;
-//double *g_bg[13];
-//double *g_rp[480];
+int *g_xint;
 
 char *size;
 int threads; 
@@ -1051,10 +1050,10 @@ void E_pre_mul(double *g_out, double *g_in, int length)
   pre_mul <<<length / 512, 128>>> (length, g_out, g_ct);
 }
 
-void E_mul(double *g_out, double *g_in1, double *g_in2, int length, float err)
+void E_mul(double *g_out, double *g_in1, double *g_in2, int length, float err, int fft_f)
 {
   
-  cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_in1, (cufftDoubleComplex *) g_in1, CUFFT_INVERSE));
+  if(fft_f) cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_in1, (cufftDoubleComplex *) g_in1, CUFFT_INVERSE));
   mult3 <<<length / 512, 128>>> (g_out, g_in1, g_in2, g_ct, length);
   cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_out, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
   norm1 <<<length / threads, threads >>> 
@@ -1188,6 +1187,7 @@ void alloc_gpu_mem(int n)
   cutilSafeCall (cudaMalloc ((void **) &g_x, sizeof (double) * n ));
   cutilSafeCall (cudaMalloc ((void **) &g_y, sizeof (double) * n ));
   cutilSafeCall (cudaMalloc ((void **) &g_ct, sizeof (double) * n / 4));
+  cutilSafeCall (cudaMalloc ((void **) &g_xint, sizeof (int) * n ));
   cutilSafeCall (cudaMalloc ((void **) &g_err, sizeof (float)));
   cutilSafeCall (cudaMalloc ((void **) &g_ttp, sizeof (double) * n));
   cutilSafeCall (cudaMalloc ((void **) &g_ttmp, sizeof (double) * n));
@@ -1262,6 +1262,7 @@ void free_gpu(void)
   cutilSafeCall (cudaFree ((char *) g_x));
   cutilSafeCall (cudaFree ((char *) g_y));
   cutilSafeCall (cudaFree ((char *) g_ct));
+  cutilSafeCall (cudaFree ((char *) g_xint));
   cutilSafeCall (cudaFree ((char *) g_err));
   cutilSafeCall (cudaFree ((char *) g_ttp));
   cutilSafeCall (cudaFree ((char *) g_ttp1));
@@ -1597,16 +1598,11 @@ read_checkpoint_packed (int q)
   x_packed[end + 3] = 0; // stage
   x_packed[end + 4] = 0; // accumulated time
   x_packed[end + 5] = 0; // b1
-  // 6-14 reserved for extending b1
-  x_packed[end + 6] = 0; 
-  x_packed[end + 7] = 0; 
-  x_packed[end + 8] = 0; 
-  x_packed[end + 9] = 0; 
-  x_packed[end + 10] = 0; 
-  x_packed[end + 11] = 0; 
-  x_packed[end + 12] = 0; 
-  x_packed[end + 13] = 0; 
-  x_packed[end + 14] = 0; 
+  // 6-9 reserved for extending b1
+  // 10-24 reserved for stage 2
+  int i;
+  for(i = 6; i < 25; i++) x_packed[end + i] = 0; 
+
   return x_packed;
 }
 
@@ -1617,6 +1613,8 @@ int read_st2_checkpoint (int q, unsigned *x_packed)
   char chkpnt_cfn[32];
   char chkpnt_tfn[32];
   int end = (q + 31) / 32;
+  
+  //x_packed = (unsigned *) malloc (sizeof (unsigned) * (end + 15));
   
   sprintf (chkpnt_cfn, "c%ds2", q);
   sprintf (chkpnt_tfn, "t%ds2", q);
@@ -2496,12 +2494,92 @@ void guess_pminus1_bounds (
  *      Main Function
  *
  **************************************************************/
+int stage2_init_param3(int e, int n, int trans, float *err)
+{ 
+  int j, i, k = 0;
+  mpz_t exponent;
+  long long b[e/2 + 1];
+  
+  for(i = 0; i <= e/2; i++)
+  {
+    b[i] = pow(2 * i + 1,e/2);
+    b[i] *= b[i];
+  }
+  for(i = e/2; i > 0; i--)
+  {
+    while (k < i)
+    {
+      j = i;
+      while(j > k)
+      {
+        b[j] = b[j] - b[j-1];
+        j--;
+      }
+      k++;
+      j = i;
+      while(j > k)
+      {
+        b[j] = b[j] - b[j-1];
+        j--;
+      }
+    }
+  }
+  mpz_init(exponent);
+  for(i = 0; i <= e / 2; i++)
+  {
+    mpz_set_ui (exponent, b[i]);
+    trans = E_to_the_p(&e_data[2 * i * n], g_y, exponent, n, trans, err);
+    if(i > 0)
+    {
+      cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[2 * i * n], (cufftDoubleComplex *) &e_data[2 * i * n], CUFFT_INVERSE));
+	    copy_kernel<<<n / threads, threads>>>(&e_data[(2 * i - 1) * n], &e_data[2 * i * n]);
+	    trans++;
+    }
+  }
+  pre_mul <<<n / 512, 128>>> (n, &e_data[e * n], g_ct);
+  E_pre_mul(&e_data[0], &e_data[0], n);
+  trans++;
+  mpz_clear(exponent);
+
+  return trans;
+}
+
+int next_base1(int k, int e, int n, int trans, float *err)
+{ 
+  int j;
+  
+  if(k == 1) return(stage2_init_param3(e, n, trans,  err));
+  if(k > 3)
+  {
+    if(k <= e + 1)
+    {
+      E_mul(&e_data[(k - 3) * n], &e_data[(k - 2) * n], &e_data[(k - 3) * n], n, *err, 0);
+      j = e + 3 - k;
+      trans += 2 * (k - 3);
+    }
+    else
+    {
+      E_half_mul(&e_data[(e-1) * n], &e_data[(e-1) * n], &e_data[e * n], n, *err);
+      j = 1;
+      trans += 2 * ( e - 1);
+    }
+    for(; j < e-1; j++) E_mul(&e_data[(e-j-1) * n], &e_data[(e-j) * n], &e_data[(e-j-1) * n], n, *err, 1);
+    cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[1 * n], (cufftDoubleComplex *) &e_data[1 * n], CUFFT_INVERSE));
+  }
+  E_half_mul(&e_data[0], &e_data[1 * n], &e_data[0], n, *err);
+  E_pre_mul(&e_data[0], &e_data[0], n);
+  trans += 2;
+  return trans;
+}
+
+
+
 int next_base(int e, int n, int trans, float err)
 { 
   int j;
   
   E_half_mul(&e_data[(e - 1) * n], &e_data[(e - 1) * n], &e_data[e * n], n, err);
-  for(j = 1; j < e - 1; j++) E_mul(&e_data[(e - j - 1) * n], &e_data[(e - j) * n], &e_data[(e - j - 1) * n], n, err);
+  for(j = 1; j < e - 1; j++) E_mul(&e_data[(e - j - 1) * n], &e_data[(e - j) * n], &e_data[(e - j - 1) * n], n, err, 1);
   cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[1 * n], (cufftDoubleComplex *) &e_data[1 * n], CUFFT_INVERSE));
   E_half_mul(&e_data[0], &e_data[1 * n], &e_data[0], n, err);
   E_pre_mul(&e_data[0], &e_data[0], n);
@@ -2514,18 +2592,20 @@ int stage2_init_param1(int k, int base, int e, int n, int trans, float *err)
   int i, j;
   mpz_t *exponents; 
 
-  exponents = (mpz_t *) malloc((e+1) * sizeof(mpz_t));
-  for(j = 0; j <= e; j++) mpz_init(exponents[j]);
-  for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2) * base, e);
+  exponents = (mpz_t *) malloc((e + 2) * sizeof(mpz_t));
+  for(j = 0; j <= e + 1; j++) mpz_init(exponents[j]);
+  for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2), e);
+  mpz_ui_pow_ui (exponents[e + 1], base, e);
   for(j = 0; j < e; j++)
     for(i = e; i > j; i--) mpz_sub(exponents[i], exponents[i-1], exponents[i]);
+  trans = E_to_the_p(g_y, g_y, exponents[e + 1], n, trans, err);
   for(j = 0; j <= e; j++)
 	{
 	    //mpz_out_str (stdout, 10, exponents[j]);
       //printf("\n");
       trans = E_to_the_p(&e_data[j * n], g_y, exponents[j], n, trans, err);
   }
-  for(j = 0; j <= e; j++) mpz_clear(exponents[j]);
+  for(j = 0; j <= e + 1; j++) mpz_clear(exponents[j]);
   E_pre_mul(&e_data[0], &e_data[0], n);
   E_pre_mul(&e_data[e * n], &e_data[e * n], n);
   for(j = 1; j < e; j++)
@@ -2555,10 +2635,44 @@ int stage2_init_param2(int num, int cur_rp, int base, int e, int n, uint8 *gaps,
       E_pre_mul(&rp_data[i * n], &rp_data[i * n], n);
       trans++;
       j++;
-      rp += 2 * gaps[j];
+      if(rp < base - 1) rp += 2 * gaps[j];
   }
 
   mpz_clear(exponent);
+
+  return trans;
+}
+
+int stage2_init_param3(int num, int cur_rp, int base, int e, int n, uint8 *gaps, int trans, float *err)
+{ 
+  int rp = 1, j = 0, i, k = 1;
+
+  while(j < cur_rp)
+  {
+    j++;
+    rp += 2 * gaps[j];
+  }
+  if(rp < 2 * e)
+    while(k <= rp)
+    {
+      trans = next_base1(k, e, n, trans, err);
+      k += 2;
+    }
+  else trans = stage2_init_param1(rp, 1, e, n, trans, err);
+  copy_kernel<<<n / threads, threads>>>(&rp_data[0], &e_data[0]);
+  k = rp + 2;
+  for(i = 1; i < num; i++)
+  {
+    j++;
+    rp += 2 * gaps[j];
+    while(k <= rp)
+    {
+      trans = next_base1(k, e, n, trans, err);
+      k += 2;
+    }
+    copy_kernel<<<n / threads, threads>>>(&rp_data[i * n], &e_data[0]);
+
+  }
 
   return trans;
 }
@@ -2568,41 +2682,42 @@ int rp_init_count1(int k, int base, int e, int n)
   int i, j, trans = 0;
   mpz_t *exponents; 
 
-  exponents = (mpz_t *) malloc((e+1) * sizeof(mpz_t));
-  for(j = 0; j <= e; j++) mpz_init(exponents[j]);
-  for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2) * base, e);
+  exponents = (mpz_t *) malloc((e+2) * sizeof(mpz_t));
+  for(j = 0; j <= e + 1; j++) mpz_init(exponents[j]);
+  for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2), e);
+  mpz_ui_pow_ui (exponents[e + 1], base, e);
   for(j = 0; j < e; j++)
     for(i = e; i > j; i--) mpz_sub(exponents[i], exponents[i-1], exponents[i]);
+  trans += (int) mpz_sizeinbase (exponents[e + 1], 2) + (int) mpz_popcount(exponents[e + 1]) - 2;
   for(j = 0; j <= e; j++)
 	{
 	    trans += (int) mpz_sizeinbase (exponents[j], 2) + (int) mpz_popcount(exponents[j]) - 2;
   }
-  for(j = 0; j <= e; j++) mpz_clear(exponents[j]);
+  for(j = 0; j <= e + 1; j++) mpz_clear(exponents[j]);
 
-  return 2 * (trans + e + 1);
+  return 2 * (trans + e + 2) - 1;
 }
 
 int rp_init_count2(int num, int cur_rp, int e, int n, uint8 *gaps)
 { 
   int rp = 1, j = 0, i, trans = 0;
-  mpz_t exponent;
-  
-  mpz_init(exponent);
+  int numb[6] = {10,38,102,196,346,534};
 
   while(j < cur_rp)
   {
     j++;
     rp += 2 * gaps[j];
   }
-  for(i = 0; i < num; i++)
+  if(cur_rp == 0) trans -= e * e / 2;
+  cur_rp = rp;
+  if(rp == 1) trans += numb[e/2-1];
+  else trans = rp_init_count1(rp, 1, e, n);
+  for(i = 1; i < num; i++)
   {
-      mpz_ui_pow_ui (exponent, rp, e);
-	    trans += (int) mpz_sizeinbase (exponent, 2) + (int) mpz_popcount(exponent) - 2;
       j++;
       rp += 2 * gaps[j];
   }
-  trans = 2 * (trans + num);
-  mpz_clear(exponent);
+  trans += e * (rp - cur_rp);
 
   return trans;
 }
@@ -2619,6 +2734,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
   int prime, prime_pair;
   uint8 *rp_gaps = NULL;
   int sprimes[] = {3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 43, 47, 53, 0};
+  //int *sprimes1;
   uint8 two_to_i[] = {1, 2, 4, 8, 16, 32, 64, 128};
   int count0 = 0, count1 = 0, count2 = 0;
   mpz_t control;
@@ -2646,6 +2762,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
    nrp = x_packed[end + 13];
  }
  
+ 
  if(d % 2310 == 0)
 	{
 	  p_d = 13;
@@ -2671,8 +2788,11 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
 	  rpt = 2 * d / 6;
 	}
   
-  ks = ((((b2 / p_d + 1) >> 1) + d - 1) / d - 1) * d;
+  if(b1 * p_d * 53 < b2) ks = ((((b1 * 53 + 1) >> 1) + d - 1) / d - 1) * d;
+  else if(b1 * p_d < b2) ks = ((((b2 / p_d + 1) >> 1) + d - 1) / d - 1) * d;
+  else ks = ((((b1 + 1) >> 1) + d - 1) / d - 1) * d;
   ke = ((((b2 + 1) >> 1) + d - 1) / d) * d;
+
   bprimes = (uint8*) malloc(ke * sizeof(uint8));
   if(!bprimes) 
   {
@@ -2791,26 +2911,32 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
     itime = x_packed[end + 20];
     ptime = x_packed[end + 21];
   }
-  if (k == 0) k = ks;
-  if(nrp > rpt - m) nrp = rpt - m;
 
   ptran_tot = (ke - ks) / 2 * 2 * e * ((rpt + nrp - 1) / nrp) + count1 * 2;
-  itran_tot = rp_init_count2(rpt, 0, e, n, rp_gaps) + rp_init_count1(ks, d, e, n) * ((rpt + nrp - 1) / nrp) + x_packed[end + 17];
-
+  itran_tot = rp_init_count1(ks, d, e, n) * ((rpt + nrp - 1) / nrp) + x_packed[end + 17];
+  int su = 0;
+  while (su < rpt) 
+  {
+    if(rpt - su > nrp) itran_tot += rp_init_count2(nrp, su, e, n, rp_gaps);
+    else itran_tot += rp_init_count2(rpt - su, su, e, n, rp_gaps);
+    su += nrp;
+  }
+  if (k == 0) k = ks;
+  if(nrp > rpt - m) nrp = rpt - m;
   gettimeofday (&time0, NULL);
   do
   {
     printf("Processing %d - %d of %d relative primes.\n", m + 1, m + nrp, rpt);
     printf("Inititalizing pass... ");
+    num_tran = stage2_init_param3(nrp, m, d, e, n, rp_gaps, num_tran, &err); 
     num_tran = stage2_init_param1(k, d, e, n, num_tran, &err);
-    num_tran = stage2_init_param2(nrp, m, d, e, n, rp_gaps, num_tran, &err); 
     itran_done += num_tran;
     if((m > 0 || k > ks) && fp)
     {
       x_packed[end + 17] += num_tran;
       itran_tot += num_tran;
-      fp = 0;
     }
+    fp = 0;
     cutilSafeCall (cudaMemcpy (&err, g_err, sizeof (float), cudaMemcpyDeviceToHost));
     gettimeofday (&time1, NULL);
     time = 1000000.0 * (double)(time1.tv_sec - time0.tv_sec) + time1.tv_usec - time0.tv_usec;
@@ -2831,7 +2957,8 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
     tran_save = 0;
     
     checkpoint_int = (ke - ks) / 2 * e + count1 * nrp / (double) rpt;
-    int temp = (int) checkpoint_int / checkpoint_iter;
+    int temp = (int) (checkpoint_int / checkpoint_iter);
+    if(temp ==0) temp = 1;
     checkpoint_int = 2.0 * ((ke - ks) / 2 ) / (double) temp;
     checkpoint_bnd = 0.0;
     while((int) checkpoint_bnd <= k - ks) checkpoint_bnd += checkpoint_int;
@@ -2857,7 +2984,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
 	    t += rpt - nrp;
 	    if(!quitting)
 	    {
-	      if(k < ke - 1) num_tran = next_base(e, n, num_tran, err);
+	      if(k < ke - 1) num_tran = next_base1(k, e, n, num_tran, &err);
         if(num_tran % 200 < 2 * e)
         {
           cutilSafeCall (cudaMemcpy (&err, g_err, sizeof (float), cudaMemcpyDeviceToHost));
@@ -2865,10 +2992,8 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
         }                 
         else if(polite_f && num_tran % (2 * polite) < 2 * e) cutilSafeThreadSync();
       }
-      //if((k > ks && k < ke - predicted && ((k - ks) / 2) % predicted == 0) || k > ke - 2 || quitting == 1)
       if((int) checkpoint_bnd <= k - ks || quitting == 1)
       {
-        //printf("%f %d %d %d %d %d %d %d %f %f\n",checkpoint_bnd, k, ks, ke, itran_done, itran_tot, ptran_done, ptran_tot, itime, ptime);
         checkpoint_bnd += checkpoint_int;
         if(quitting == 1) cutilSafeCall (cudaMemcpy (&err, g_err, sizeof (float), cudaMemcpyDeviceToHost));
         if(err <= 0.4f)
@@ -3020,18 +3145,18 @@ check_pm1 (int q, char *expectedResidue)
     if (g_d%7 != 0) ptest=7;
     else if (g_d%11 !=0) ptest=11;
     else if (g_d%13 !=0) ptest=13;
-    else if (g_d%17 !=0) ptest=17;
-    else if (g_d%19 !=0) ptest=19;
-    else if (g_d%23 !=0) ptest=23;
-    else if (g_d%27 !=0) ptest=27;
-    else if (g_d%29 !=0) ptest=29;
+    //else if (g_d%17 !=0) ptest=17;
+    //else if (g_d%19 !=0) ptest=19;
+    //else if (g_d%23 !=0) ptest=23;
+    //else if (g_d%27 !=0) ptest=27;
+    //else if (g_d%29 !=0) ptest=29;
     else ptest=0;
     // printf("p=%d\n",ptest);
     if (ptest > 0) {
-	if (b1 * ptest * 53 < g_b2) {
-		printf("B1 should be at least %d, increasing it.\n", g_b2/(ptest * 53)+1);
-		b1 = g_b2/(ptest * 53)+1;
-    	}
+	//if (b1 * ptest * 53 < g_b2) {
+		//printf("B1 should be at least %d, increasing it.\n", g_b2/(ptest * 53)+1);
+		//b1 = g_b2/(ptest * 53)+1;
+   // 	}
 
     if(x_packed[(q + 31)/32 + 5] == 0)  x_packed[(q + 31)/32 + 5] = b1;
     else
@@ -3041,14 +3166,14 @@ check_pm1 (int q, char *expectedResidue)
       fflush(stdout); 
     }
 
-    	if (g_b2 < ptest * g_d * (2*g_e+1)) {
-		printf("B2 should be at least %d, increasing it.\n", ptest * g_d * (2*g_e+1));
-		g_b2 = ptest * g_d * (2*g_e+1);
-    	}
-    	if (g_b2 < ptest * b1) {
-		printf("B2 should be at least %d, increasing it.\n", ptest * b1);
-		g_b2 = ptest * b1;
-    	}
+    //	if (g_b2 < ptest * g_d * (2*g_e+1)) {
+		//printf("B2 should be at least %d, increasing it.\n", ptest * g_d * (2*g_e+1));
+		//g_b2 = ptest * g_d * (2*g_e+1);
+    //	}
+    //	if (g_b2 < ptest * b1) {
+		//printf("B2 should be at least %d, increasing it.\n", ptest * b1);
+		//g_b2 = ptest * b1;
+    //	}
         
     }
     if (g_b2 > 1000000000) printf("WARNING:  Expected failure with B2 > 1000000000!\n"); //max B2 supported?
