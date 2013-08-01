@@ -58,7 +58,7 @@ double *rp_data;
 int *g_xint;
 
 char *size;
-int threads1, threads2 = 256, threads3= 128; 
+int threads1, threads2 = 128, threads3= 128; 
 float *g_err;
 int *g_datai, *g_carryi; 
 long long int *g_datal, *g_carryl;
@@ -68,7 +68,7 @@ int quitting, checkpoint_iter, fftlen, tfdepth=0, llsaved=0, s_f, t_f, r_f, d_f,
 int polite, polite_f;//, bad_selftest=0;
 int b1 = 0, g_b1_commandline = 0;
 int g_b2 = 0, g_b2_commandline = 0;
-int g_d = 2310, g_d_commandline = 0;
+int g_d = 30, g_d_commandline = 0;
 int g_e = 6;
 int g_nrp = 0;
 int keep_s1 = 0;
@@ -2620,23 +2620,36 @@ int next_base1(int k, int e, int n, int trans, float *err)
 int stage2_init_param1(int k, int base, int e, int n, int trans, float *err)
 {
   int i, j;
-  mpz_t *exponents; 
+  mpz_t exponent;
+  
+  mpz_init(exponent);
+  mpz_ui_pow_ui (exponent, base, e);
+  trans = E_to_the_p(g_y, g_y, exponent, n, trans, err);
+  mpz_clear(exponent);
 
-  exponents = (mpz_t *) malloc((e + 2) * sizeof(mpz_t));
-  for(j = 0; j <= e + 1; j++) mpz_init(exponents[j]);
-  for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2), e);
-  mpz_ui_pow_ui (exponents[e + 1], base, e);
-  for(j = 0; j < e; j++)
-    for(i = e; i > j; i--) mpz_sub(exponents[i], exponents[i-1], exponents[i]);
-  trans = E_to_the_p(g_y, g_y, exponents[e + 1], n, trans, err);
-  for(j = 0; j <= e; j++) trans = E_to_the_p(&e_data[j * n], g_y, exponents[j], n, trans, err);
-  for(j = 0; j <= e + 1; j++) mpz_clear(exponents[j]);
-  E_pre_mul(&e_data[0], &e_data[0], n);
-  E_pre_mul(&e_data[e * n], &e_data[e * n], n);
-  for(j = 1; j < e; j++)
-    cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[j * n], (cufftDoubleComplex *) &e_data[j * n], CUFFT_INVERSE));
+  if(k < 2 * e)
+    for(j = 1; j <= k; j += 2)
+    {
+      trans = next_base1(j, e, n, trans, err);
+      cutilSafeThreadSync();
+    }  
+  else
+  {
+    mpz_t *exponents; 
 
-  trans += e + 1;
+    exponents = (mpz_t *) malloc((e + 1) * sizeof(mpz_t));
+    for(j = 0; j <= e; j++) mpz_init(exponents[j]);
+    for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2), e);
+    for(j = 0; j < e; j++)
+      for(i = e; i > j; i--) mpz_sub(exponents[i], exponents[i-1], exponents[i]);
+    for(j = 0; j <= e; j++) trans = E_to_the_p(&e_data[j * n], g_y, exponents[j], n, trans, err);
+    for(j = 0; j <= e; j++) mpz_clear(exponents[j]);
+    E_pre_mul(&e_data[0], &e_data[0], n);
+    E_pre_mul(&e_data[e * n], &e_data[e * n], n);
+    for(j = 1; j < e; j++)
+      cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[j * n], (cufftDoubleComplex *) &e_data[j * n], CUFFT_INVERSE));
+    trans += e + 1;
+  }
   return trans;
 }
 
@@ -2676,13 +2689,7 @@ int stage2_init_param3(int num, int cur_rp, int base, int e, int n, uint8 *gaps,
     j++;
     rp += 2 * gaps[j];
   }
-  if(rp < 2 * e)
-    while(k <= rp)
-    {
-      trans = next_base1(k, e, n, trans, err);
-      k += 2;
-    }
-  else trans = stage2_init_param1(rp, 1, e, n, trans, err);
+  trans = stage2_init_param1(rp, 1, e, n, trans, err);
   copy_kernel<<<n / threads1, threads1>>>(&rp_data[0], &e_data[0]);
   k = rp + 2;
   for(i = 1; i < num; i++)
@@ -2692,6 +2699,7 @@ int stage2_init_param3(int num, int cur_rp, int base, int e, int n, uint8 *gaps,
     while(k <= rp)
     {
       trans = next_base1(k, e, n, trans, err);
+      cutilSafeThreadSync();
       k += 2;
     }
     copy_kernel<<<n / threads1, threads1>>>(&rp_data[i * n], &e_data[0]);
@@ -2704,22 +2712,34 @@ int stage2_init_param3(int num, int cur_rp, int base, int e, int n, uint8 *gaps,
 int rp_init_count1(int k, int base, int e, int n)
 { 
   int i, j, trans = 0;
-  mpz_t *exponents; 
+  int numb[6] = {10,38,102,196,346,534};
+  mpz_t exponent; 
 
-  exponents = (mpz_t *) malloc((e+2) * sizeof(mpz_t));
-  for(j = 0; j <= e + 1; j++) mpz_init(exponents[j]);
-  for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2), e);
-  mpz_ui_pow_ui (exponents[e + 1], base, e);
-  for(j = 0; j < e; j++)
-    for(i = e; i > j; i--) mpz_sub(exponents[i], exponents[i-1], exponents[i]);
-  trans += (int) mpz_sizeinbase (exponents[e + 1], 2) + (int) mpz_popcount(exponents[e + 1]) - 2;
-  for(j = 0; j <= e; j++)
-	{
-	    trans += (int) mpz_sizeinbase (exponents[j], 2) + (int) mpz_popcount(exponents[j]) - 2;
+  mpz_init(exponent);
+  mpz_ui_pow_ui (exponent, base, e);
+  trans += (int) mpz_sizeinbase (exponent, 2) + (int) mpz_popcount(exponent) - 2;
+  mpz_clear(exponent);
+
+  if(k < 2 * e)
+  {
+    trans += numb[e / 2];
+    return(2 * trans);
   }
-  for(j = 0; j <= e + 1; j++) mpz_clear(exponents[j]);
-
-  return 2 * (trans + e + 2) - 1;
+  else
+  {
+    mpz_t *exponents; 
+    exponents = (mpz_t *) malloc((e+1) * sizeof(mpz_t));
+    for(j = 0; j <= e; j++) mpz_init(exponents[j]);
+    for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2), e);
+    for(j = 0; j < e; j++)
+      for(i = e; i > j; i--) mpz_sub(exponents[i], exponents[i-1], exponents[i]);
+    for(j = 0; j <= e; j++)
+	  {
+	      trans += (int) mpz_sizeinbase (exponents[j], 2) + (int) mpz_popcount(exponents[j]) - 2;
+    }
+    for(j = 0; j <= e; j++) mpz_clear(exponents[j]);
+    return 2 * (trans + e + 2) - 1;
+  }
 }
 
 int rp_init_count2(int num, int cur_rp, int e, int n, uint8 *gaps)
@@ -2872,16 +2892,18 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
   m = k - 1;
   j = 0;
   rp = 0;
+  uint8 tprimes[rpt / 8];
+  int l = 0;
   while(m < ke)
   {
-    bprimes[rp] = 0;
+    tprimes[l] = 0;
     for(i = 0; i < 8; i++)
     {
       m += rp_gaps[j];
       k -= rp_gaps[j];
       if (bprimes[m] || bprimes[k])
       {
-        bprimes[rp] |= two_to_i[i];
+        tprimes[l] |= two_to_i[i];
         count1++;
       }
       else count0++;
@@ -2894,7 +2916,13 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
         k = m + 1;
       }
     }
-    rp++;
+    l++;
+    if(l * 8 == rpt)
+    {
+      for(t = 0; t < (rpt >> 3); t++) bprimes[rp + t] = tprimes[t];
+      l = 0;
+      rp += rpt >> 3;
+    }
   }
   printf("Zeros: %d, Ones: %d, Pairs: %d\n", count0, count1, count2);
 
@@ -2975,13 +3003,17 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
 	  num_tran = 0;
     tran_save = 0;
     
-    checkpoint_int = (ke - ks) / 2 * e + count1 * nrp / (double) rpt;
-    int temp = (int) (checkpoint_int / checkpoint_iter);
-    if(temp ==0) temp = 1;
-    checkpoint_int = 2.0 * ((ke - ks) / 2 ) / (double) temp;
-    checkpoint_bnd = 0.0;
-    while((int) checkpoint_bnd <= k - ks) checkpoint_bnd += checkpoint_int;
-    
+    checkpoint_int = (ke - ks) / 2 * e + count1 * nrp / (double) rpt; // number of transforms per pass
+    int chkp_per_pass;
+    chkp_per_pass = RINT_x86(checkpoint_int / checkpoint_iter);
+    if(chkp_per_pass == 0) chkp_per_pass = 1;
+    int next_checkpoint = ke - 1;
+    checkpoint_int = (ke - ks + 1) / (double) chkp_per_pass;
+    checkpoint_bnd = ks - 2.0;
+    while((int) checkpoint_bnd < k) checkpoint_bnd += checkpoint_int;
+    next_checkpoint = RINT_x86(checkpoint_bnd);
+    next_checkpoint |= 1;
+
     for( ; k < ke && !quitting; k += 2)
     {
       for(j = 0; j < nrp; j++)
@@ -3011,9 +3043,11 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
         }                 
         else if(polite_f && num_tran % (2 * polite) < 2 * e) cutilSafeThreadSync();
       }
-      if((int) checkpoint_bnd <= k - ks || quitting == 1)
+      if(k == next_checkpoint || quitting == 1)
       {
         checkpoint_bnd += checkpoint_int;
+        next_checkpoint = RINT_x86(checkpoint_bnd);
+        next_checkpoint |= 1;
         if(quitting == 1) cutilSafeCall (cudaMemcpy (&err, g_err, sizeof (float), cudaMemcpyDeviceToHost));
         if(err <= 0.4f)
         {
@@ -3120,10 +3154,10 @@ check_pm1 (int q, char *expectedResidue)
         printf("Stage 2 checkpoint found.\n");
         int end = (q + 31) / 32;
         b1 = x_packed[end + 5];
-        g_b2 = x_packed[end + 6];
-        g_d = x_packed[end + 7];
-        g_e = x_packed[end + 8];
-        g_nrp = x_packed[end + 9];
+        g_b2 = x_packed[end + 10];
+        g_d = x_packed[end + 11];
+        g_e = x_packed[end + 12];
+        g_nrp = x_packed[end + 13];
       }
       else printf("No stage 2 checkpoint.\n");
     }  
