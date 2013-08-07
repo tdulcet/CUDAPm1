@@ -58,18 +58,18 @@ double *rp_data;
 int *g_xint;
 
 char *size;
-int threads1, threads2 = 128, threads3= 128; 
+int threads1, threads2 = 256, threads3= 128; 
 float *g_err;
 int *g_datai, *g_carryi; 
 long long int *g_datal, *g_carryl;
 cufftHandle plan; 
 
-int quitting, checkpoint_iter, fftlen, tfdepth=0, llsaved=0, s_f, t_f, r_f, d_f, k_f;
+int quitting, checkpoint_iter, fftlen, tfdepth=74, llsaved=2, s_f, t_f, r_f, d_f, k_f;
 int polite, polite_f;//, bad_selftest=0;
 int b1 = 0, g_b1_commandline = 0;
 int g_b2 = 0, g_b2_commandline = 0;
-int g_d = 30, g_d_commandline = 0;
-int g_e = 6;
+int g_d = 0, g_d_commandline = 0;
+int g_e = 0;
 int g_nrp = 0;
 int keep_s1 = 0;
 
@@ -1096,9 +1096,9 @@ void E_init_d(double *g, double value, int n)
   cudaMemcpy (g, x, sizeof (double) , cudaMemcpyHostToDevice);
 }
 
-void E_pre_mul(double *g_out, double *g_in, int n)
+void E_pre_mul(double *g_out, double *g_in, int n, int fft_f)
 {
-  cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_in, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
+  if(fft_f) cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_in, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
   pre_mul <<<n / (4 * threads2), threads2>>> (n, g_out, g_ct);
 }
 
@@ -1142,7 +1142,7 @@ int E_to_the_p(double *g_out, double *g_in, mpz_t p, int n, int trans, float *er
   
   last = mpz_sizeinbase (p, 2);
 
-  E_pre_mul(g_save, g_in, n);
+  E_pre_mul(g_save, g_in, n, 1);
   trans++;
   if(g_out != g_in) copy_kernel<<<n / threads1, threads1>>>(g_out, g_in);
 
@@ -2320,11 +2320,12 @@ void guess_pminus1_bounds (
 	int guess_exp,	/* N in K*B^N+C. Exponent to test. */
 	int	how_far_factored,	/* Bit depth of trial factoring */
 	int	tests_saved,		/* 1 if doublecheck, 2 if first test */
+	int vals,
 	int *bound1,
 	int *bound2,
 	double	*success_rate)
 {
-	int guess_B1, guess_B2, vals, i;
+	int guess_B1, guess_B2, /*vals,*/ i;
 	double	h, pass1_squarings, pass2_squarings;
 	double	logB1, logB2, kk, logkk, temp, logtemp, log2;
 	double	prob, gcd_cost, ll_tests, numprimes;
@@ -2369,7 +2370,7 @@ void guess_pminus1_bounds (
 
 	// vals = cvt_mem_to_estimated_gwnums (max_mem (thread_num), k, b, n, c);
 	// if (vals < 1) vals = 1;
-	vals = 125;
+	//vals = 176;
 
 /* Find the best B1 */
 
@@ -2401,18 +2402,18 @@ void guess_pminus1_bounds (
 		pass2_squarings = 0.0;
 	} else if (vals <= 8) {		/* D = 210, E = 1, passes = 48/temps */
 		unsigned long num_passes;
-		num_passes = (unsigned long) ceil (48.0 / (vals - 3));
+		num_passes = (unsigned long) ceil (48.0 / (vals));
 		pass2_squarings = ceil ((guess_B2 - guess_B1) / 210.0) * num_passes;
 		pass2_squarings += numprimes * 1.1;
 	} else {
 		unsigned long num_passes;
 		double	numpairings;
-		num_passes = (unsigned long) ceil (480.0 / (vals - 5));
+		num_passes = (unsigned long) ceil (480.0 / (vals));
 		numpairings = (unsigned long)
 			(numprimes / 2.0 * numprimes / ((guess_B2-guess_B1) * 480.0/2310.0));
 		pass2_squarings = 2400.0 + num_passes * 90.0; /* setup costs */
-		pass2_squarings += ceil ((guess_B2-guess_B1) / 4620.0) * 2.0 * num_passes;
-		pass2_squarings += numprimes - numpairings;
+		pass2_squarings += ceil ((guess_B2-guess_B1) / 4620.0) * 2.0 * num_passes; /*number of base changes per pass * e with e = 2*/
+		pass2_squarings += numprimes - numpairings; /*these are the sub_mul operations*/
 	}
 
 /* Pass 2 FFT multiplications seem to be at least 20% slower than */
@@ -2421,7 +2422,8 @@ void guess_pminus1_bounds (
 /* gwsquare routine.  Nov, 2009:  On my Macbook Pro, with exponents */
 /* around 45M and using 800MB memory, pass2 squarings are 40% slower. */	
 /* Owftheevil reports that CUDA squarings are only about 2% slower. */
-	pass2_squarings *= 1.02;  // was 1.35
+/* New normaliztion kernels benefit stage 1 more than stage 2, back to 9% */
+	pass2_squarings *= 1.09;  // was 1.35
 
 /* What is the "average" value that must be smooth for P-1 to succeed? */
 /* Ordinarily this is 1.5 * 2^how_far_factored.  However, for Mersenne */
@@ -2581,8 +2583,9 @@ int stage2_init_param3(int e, int n, int trans, float *err)
 	    trans++;
     }
   }
-  pre_mul <<<n / (4 * threads2), threads2>>> (n, &e_data[e * n], g_ct);
-  E_pre_mul(&e_data[0], &e_data[0], n);
+  //pre_mul <<<n / (4 * threads2), threads2>>> (n, &e_data[e * n], g_ct);
+  E_pre_mul(&e_data[e * n], &e_data[e * n], n, 0);
+  E_pre_mul(&e_data[0], &e_data[0], n, 1);
   trans++;
   mpz_clear(exponent);
 
@@ -2612,7 +2615,7 @@ int next_base1(int k, int e, int n, int trans, float *err)
     cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[1 * n], (cufftDoubleComplex *) &e_data[1 * n], CUFFT_INVERSE));
   }
   E_half_mul(&e_data[0], &e_data[1 * n], &e_data[0], n, *err);
-  E_pre_mul(&e_data[0], &e_data[0], n);
+  E_pre_mul(&e_data[0], &e_data[0], n, 1);
   trans += 2;
   return trans;
 }
@@ -2644,8 +2647,8 @@ int stage2_init_param1(int k, int base, int e, int n, int trans, float *err)
       for(i = e; i > j; i--) mpz_sub(exponents[i], exponents[i-1], exponents[i]);
     for(j = 0; j <= e; j++) trans = E_to_the_p(&e_data[j * n], g_y, exponents[j], n, trans, err);
     for(j = 0; j <= e; j++) mpz_clear(exponents[j]);
-    E_pre_mul(&e_data[0], &e_data[0], n);
-    E_pre_mul(&e_data[e * n], &e_data[e * n], n);
+    E_pre_mul(&e_data[0], &e_data[0], n, 1);
+    E_pre_mul(&e_data[e * n], &e_data[e * n], n, 1);
     for(j = 1; j < e; j++)
       cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[j * n], (cufftDoubleComplex *) &e_data[j * n], CUFFT_INVERSE));
     trans += e + 1;
@@ -2669,7 +2672,7 @@ int stage2_init_param2(int num, int cur_rp, int base, int e, int n, uint8 *gaps,
   {
       mpz_ui_pow_ui (exponent, rp, e);
       trans = E_to_the_p(&rp_data[i * n], g_y, exponent, n, trans, err);
-      E_pre_mul(&rp_data[i * n], &rp_data[i * n], n);
+      E_pre_mul(&rp_data[i * n], &rp_data[i * n], n, 1);
       trans++;
       j++;
       if(rp < base - 1) rp += 2 * gaps[j];
@@ -2680,7 +2683,7 @@ int stage2_init_param2(int num, int cur_rp, int base, int e, int n, uint8 *gaps,
   return trans;
 }
 
-int stage2_init_param3(int num, int cur_rp, int base, int e, int n, uint8 *gaps, int trans, float *err)
+int stage2_init_param4(int num, int cur_rp, int base, int e, int n, uint8 *gaps, int trans, float *err)
 { 
   int rp = 1, j = 0, i, k = 1;
 
@@ -2713,6 +2716,7 @@ int rp_init_count1(int k, int base, int e, int n)
 { 
   int i, j, trans = 0;
   int numb[6] = {10,38,102,196,346,534};
+  int numb1[11] = {2,8,18,32,50,72,96,120,144,168,192};
   mpz_t exponent; 
 
   mpz_init(exponent);
@@ -2722,8 +2726,9 @@ int rp_init_count1(int k, int base, int e, int n)
 
   if(k < 2 * e)
   {
-    trans += numb[e / 2];
-    return(2 * trans);
+    trans = 2 * trans + 1;
+    trans += numb[e / 2 - 1] + numb1[k/2-1];
+    return(trans);
   }
   else
   {
@@ -2742,6 +2747,29 @@ int rp_init_count1(int k, int base, int e, int n)
   }
 }
 
+int rp_init_count1a(int k, int base, int e, int n)
+{ 
+  int trans;
+  int numb[6] = {10,38,102,196,346,534};
+  int numb1[12] = {0,2,8,18,32,50,72,96,120,144,168,192};
+
+  trans = (int) (e * log2((double)base) * 3.0 );
+  if(k < 2 * e)
+  {
+    trans += numb[e/2-1] + numb1[(k+1)/2-1];
+  }
+  else
+  {
+    if(e == 2) trans += (int) (9.108 * log2((double)k) + 10.7);
+    else if(e == 4) trans += (int) (30.349 * log2((double)k) + 50.5);
+    else if(e == 6) trans += (int) (64.560 * log2((double)k) + 137.6);
+    else if(e == 8) trans += (int) (110.224 * log2((double)k) + 265.2);
+    else if(e == 10) trans += (int) (168.206 * log2((double)k) + 478.6);
+    else trans += (int) (237.888 * log2((double)k) + 731.5);
+  }
+  return trans;
+}
+
 int rp_init_count2(int num, int cur_rp, int e, int n, uint8 *gaps)
 { 
   int rp = 1, j = 0, i, trans = 0;
@@ -2752,7 +2780,7 @@ int rp_init_count2(int num, int cur_rp, int e, int n, uint8 *gaps)
     j++;
     rp += 2 * gaps[j];
   }
-  if(cur_rp == 0) trans -= e * e / 2;
+  if(cur_rp == 0) trans -= e * e / 2 - 1;
   cur_rp = rp;
   if(rp == 1) trans += numb[e/2-1];
   else trans = rp_init_count1(rp, 1, e, n);
@@ -2766,12 +2794,30 @@ int rp_init_count2(int num, int cur_rp, int e, int n, uint8 *gaps)
   return trans;
 }
 
+int rp_init_count2a(int cur_rp, int e, int n, uint8 *gaps)
+{ 
+  int rp = 1, j = 0, trans = 0;
+  int numb[6] = {10,38,102,196,346,534};
+
+  while(j < cur_rp)
+  {
+    j++;
+    rp += 2 * gaps[j];
+  }
+  if(cur_rp == 0) trans -= e * e / 2 - 1;
+  cur_rp = rp;
+  if(rp == 1) trans += numb[e/2-1];
+  else trans = rp_init_count1a(rp, 1, e, n);
+
+  return trans;
+}
+
 
 int stage2(double *x, unsigned *x_packed, int q, int n, float err)
 {
-  int j, i, t;
-  int e = g_e, d = g_d, b2 = g_b2, nrp = g_nrp;
-  int rpt, rp; 
+  int j, i = 0, t;
+  int e, d, b2 = g_b2, nrp = g_nrp;
+  int rpt = 0, rp; 
   int ks, ke, m = 0, k;
   int last = 0;
   uint8 *bprimes = NULL;
@@ -2782,7 +2828,90 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
   int count0 = 0, count1 = 0, count2 = 0;
   mpz_t control;
   timeval time0, time1;
-  
+
+  {
+    int best_guess = 0x01111111;
+    int best_d = 0, best_e = 0, best_nrp = 0;
+    int guess;
+    int passes;
+    int su;
+    int nrpe = 0;
+    int start_e = 2, end_e = 12;
+    int start_d = 9240, d_div = 1;
+
+    if(g_e)
+    {
+      start_e = g_e;
+      end_e = g_e;
+    }
+    if(g_d)
+    {
+      start_d = g_d;
+      d_div = g_d;
+    }
+    for(d = start_d; d > 1;d /= d_div)
+    {
+    if(d >= 2310)
+    {
+      rpt = d / 2310 * 480;
+      i = 4;
+    }
+    else if(d >= 210)
+    {
+      rpt = d / 210 * 48;
+      i = 3;
+    }
+    else if(d >= 30)
+    {
+      rpt = d / 30 * 8;
+      i = 2;
+    }
+    else if(d >= 6)
+    {
+      rpt = d / 6 * 2;
+      i = 1;
+    }
+    if(b1 * sprimes[i] * 53 < b2) ks = ((((b1 * 53 + 1) >> 1) + d - 1) / d - 1) * d;
+    else if(b1 * sprimes[i] < b2) ks = ((((b2 / sprimes[i] + 1) >> 1) + d - 1) / d - 1) * d;
+    else ks = ((((b1 + 1) >> 1) + d - 1) / d - 1) * d;
+    ke = ((((b2 + 1) >> 1) + d - 1) / d) * d;
+    ks = ((ks / d) << 1) + 1;
+    ke = (ke / d) << 1;
+
+    for(e = start_e; e <= end_e; e +=2)
+    {
+      nrpe = nrp - e - 1;
+      if(nrpe <= 0) break;
+      passes = (rpt + nrpe - 1) / nrpe;
+      while(nrpe > 1 && passes == (rpt + nrpe - 2) / (nrpe - 1)) nrpe--;
+      guess = rp_init_count1a(ks, d, e, n) * passes;
+      for(su = 0; su < rpt; su += nrpe)guess += rp_init_count1a((su * d / rpt) | 1, 1, e, n);
+      guess += 2 * e * (d/2 - passes) - e * e / 2;
+      double numprimes = (double) ke*d / (log ((double) ke*d) - 1.0) - (double) b1 / (log ((double) b1) - 1.0);
+	    double	numpairings =	numprimes / 2.0 *	numprimes / ((double) ((ke - ks)*d) * (double) rpt / d);
+      guess += e * (ke - ks) * passes + (2.2) * (int)(numprimes-numpairings);
+      if(e == 4) guess = (int) guess * 0.95;
+      if(e == 6) guess = (int) guess * 0.90;
+      if(e == 12) guess = (int) guess * 0.85;
+      if(guess < best_guess)
+      {
+        best_guess = guess;
+        best_d = d;
+        best_e = e;
+        best_nrp = nrpe;
+      }
+    }
+    if(d>2310) d -= 2310;
+    else if(d>210) d -= 210;
+    else if(d>30) d -= 30;
+    else if(d>=6) d -= 6;
+    }
+    d = best_d;
+    e = best_e;
+    nrp = best_nrp;
+  }
+  if(d == 0) exit(3);
+
  int end = (q + 31) / 32;
  if(x_packed[end + 10] == 0)
  {
@@ -2803,6 +2932,8 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
    e = x_packed[end + 12];
    nrp = x_packed[end + 13];
  }
+ g_e = e;
+ printf("Using b1 = %d, b2 = %d, d = %d, e = %d, nrp = %d\n",b1, b2,d,e,nrp);
  
  
  if(d % 2310 == 0)
@@ -2937,7 +3068,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
   cudaMemcpy (g_x, x, sizeof (double) * n , cudaMemcpyHostToDevice);
 
   int fp = 1;
-  int num_tran = 0;
+  int num_tran = 0, temp_tran;
   int tran_save;
   int itran_tot;
   int ptran_tot;
@@ -2959,15 +3090,25 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
     ptime = x_packed[end + 21];
   }
 
-  ptran_tot = (ke - ks) / 2 * 2 * e * ((rpt + nrp - 1) / nrp) + count1 * 2;
-  itran_tot = rp_init_count1(ks, d, e, n) * ((rpt + nrp - 1) / nrp) + x_packed[end + 17];
+  ptran_tot = (ke - ks - 1) * e * ((rpt + nrp - 1) / nrp) + count1 * 2;
+  //if(ks < 2 * e)
+  int passes;
+  passes = (rpt + nrp - 1) / nrp;
+  itran_tot = rp_init_count1(ks, d, e, n) * passes + x_packed[end + 17];
   int su = 0;
   while (su < rpt) 
   {
-    if(rpt - su > nrp) itran_tot += rp_init_count2(nrp, su, e, n, rp_gaps);
-    else itran_tot += rp_init_count2(rpt - su, su, e, n, rp_gaps);
+    if(rpt - su > nrp)
+    {
+      itran_tot += rp_init_count2(nrp, su, e, n, rp_gaps);
+    }
+    else
+    {
+      itran_tot += rp_init_count2(rpt - su, su, e, n, rp_gaps);
+    }
     su += nrp;
   }
+
   if (k == 0) k = ks;
   if(nrp > rpt - m) nrp = rpt - m;
   gettimeofday (&time0, NULL);
@@ -2975,8 +3116,10 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
   {
     printf("Processing %d - %d of %d relative primes.\n", m + 1, m + nrp, rpt);
     printf("Inititalizing pass... ");
-    num_tran = stage2_init_param3(nrp, m, d, e, n, rp_gaps, num_tran, &err); 
+    num_tran = stage2_init_param4(nrp, m, d, e, n, rp_gaps, num_tran, &err); 
+    temp_tran = num_tran;
     num_tran = stage2_init_param1(k, d, e, n, num_tran, &err);
+    temp_tran = num_tran - temp_tran;
     itran_done += num_tran;
     if((m > 0 || k > ks) && fp)
     {
@@ -3003,7 +3146,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
 	  num_tran = 0;
     tran_save = 0;
     
-    checkpoint_int = (ke - ks) / 2 * e + count1 * nrp / (double) rpt; // number of transforms per pass
+    checkpoint_int = (ke - ks) / 2 * e + count1 * nrp / (double) rpt;
     int chkp_per_pass;
     chkp_per_pass = RINT_x86(checkpoint_int / checkpoint_iter);
     if(chkp_per_pass == 0) chkp_per_pass = 1;
@@ -3125,7 +3268,7 @@ check_pm1 (int q, char *expectedResidue)
   unsigned *control = NULL;
   int stage = 0, st1_factor = 0;
   size_t global_mem, free_mem, use_mem;
-  int ptest, nrp_max;
+  //int /*ptest,*/ //nrp_max;
   
   signal (SIGTERM, SetQuitting);
   signal (SIGINT, SetQuitting);
@@ -3154,37 +3297,27 @@ check_pm1 (int q, char *expectedResidue)
         printf("Stage 2 checkpoint found.\n");
         int end = (q + 31) / 32;
         b1 = x_packed[end + 5];
-        g_b2 = x_packed[end + 10];
-        g_d = x_packed[end + 11];
-        g_e = x_packed[end + 12];
-        g_nrp = x_packed[end + 13];
       }
       else printf("No stage 2 checkpoint.\n");
     }  
 
-    if (g_d_commandline == 0) g_d = 2310;
-    else g_d = g_d_commandline;
-    if (g_d%2310 == 0) nrp_max = 480;
-    else if (g_d%210 == 0) nrp_max = 48;
-    else if (g_d%30 == 0) nrp_max = 8;
-    else exit(9);  // should never reach this!
- 
-    g_nrp = (free_mem/n - 75)/8 - g_e - 1;
+    if(g_nrp == 0) g_nrp = (free_mem/n - 75)/8;
 #ifdef _MSC_VER
     if (g_nrp > (4096/sizeof(double))*1024*1024/n)
         g_nrp = (4096/sizeof(double))*1024*1024/n; // Max single allocation of 4 GB on Windows?
 #endif 
-    if (g_nrp > nrp_max) g_nrp = nrp_max;
-    if (g_nrp < 1) g_nrp = 1;
-    if ((g_d_commandline == 0) && (g_nrp < 4)) {
-         g_e = 2; g_d = 210; nrp_max = 48; // lower memory
-         g_nrp = (free_mem/n - 75)/8 - g_e - 1;
-         if (g_nrp > nrp_max) g_nrp = nrp_max;
-         if (g_nrp < 3) { g_nrp=2; g_d=30; nrp_max=8;} // lowest memory
+    double successrate = 0.0;
+    if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
+      guess_pminus1_bounds(q, tfdepth, llsaved, g_nrp, &b1, &g_b2, &successrate);
     }
-    //while (nrp_max % g_nrp != 0) g_nrp--;
-    printf("Using e=%d, d=%d, nrp=%d\n", g_e, g_d, g_nrp);
-    use_mem = (size_t) ((75 + 8*(g_nrp + g_e + 1)) * (size_t) n);
+    if (g_b1_commandline > 0) b1 = g_b1_commandline;
+    if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
+    if ((g_b1_commandline == 0) && (g_b2_commandline == 0))
+      printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);
+
+    g_d = g_d_commandline;
+    if(g_nrp < 4) g_nrp = 4;
+    use_mem = (size_t) ((75 + 8*(g_nrp)) * (size_t) n);
 #ifdef _MSC_VER
     printf("Using approximately %IuM GPU memory.\n",use_mem/1024/1024);
 #else
@@ -3192,23 +3325,6 @@ check_pm1 (int q, char *expectedResidue)
 #endif
     if (free_mem < use_mem)
        printf("WARNING:  There may not be enough GPU memory for stage 2!\n");
-
-    // Make sure parameters are sane.
-    if (g_d%7 != 0) ptest=7;
-    else if (g_d%11 !=0) ptest=11;
-    else if (g_d%13 !=0) ptest=13;
-    //else if (g_d%17 !=0) ptest=17;
-    //else if (g_d%19 !=0) ptest=19;
-    //else if (g_d%23 !=0) ptest=23;
-    //else if (g_d%27 !=0) ptest=27;
-    //else if (g_d%29 !=0) ptest=29;
-    else ptest=0;
-    // printf("p=%d\n",ptest);
-    if (ptest > 0) {
-	//if (b1 * ptest * 53 < g_b2) {
-		//printf("B1 should be at least %d, increasing it.\n", g_b2/(ptest * 53)+1);
-		//b1 = g_b2/(ptest * 53)+1;
-   // 	}
 
     if(x_packed[(q + 31)/32 + 5] == 0)  x_packed[(q + 31)/32 + 5] = b1;
     else
@@ -3218,16 +3334,6 @@ check_pm1 (int q, char *expectedResidue)
       fflush(stdout); 
     }
 
-    //	if (g_b2 < ptest * g_d * (2*g_e+1)) {
-		//printf("B2 should be at least %d, increasing it.\n", ptest * g_d * (2*g_e+1));
-		//g_b2 = ptest * g_d * (2*g_e+1);
-    //	}
-    //	if (g_b2 < ptest * b1) {
-		//printf("B2 should be at least %d, increasing it.\n", ptest * b1);
-		//g_b2 = ptest * b1;
-    //	}
-        
-    }
     if (g_b2 > 1000000000) printf("WARNING:  Expected failure with B2 > 1000000000!\n"); //max B2 supported?
     fflush(stdout); 
 
@@ -3238,7 +3344,7 @@ check_pm1 (int q, char *expectedResidue)
     restarting = 0;
     if(j == 1)
     {
-      printf ("Starting stage 1 P-1, M%d, B1 = %d, B2 = %d, e = %d, fft length = %dK\n", q, b1, g_b2, g_e, n/1024);
+      printf ("Starting stage 1 P-1, M%d, B1 = %d, B2 = %d, fft length = %dK\n", q, b1, g_b2, n/1024);
       printf ("Doing %d iterations\n", last);
       //if(stage == 1) restarting = round_off_test(x, q, n, &j, &offset, control, last);
     }
@@ -3251,7 +3357,7 @@ check_pm1 (int q, char *expectedResidue)
       }
       else
       {
-        printf ("Continuing stage 2 from a partial result of M%d fft length = %dK, iteration = %d\n", q, n/1024, j);
+        printf ("Continuing stage 2 from a partial result of M%d fft length = %dK\n", q, n/1024);
       }
     }
     fflush (stdout);
@@ -3777,7 +3883,7 @@ int main (int argc, char *argv[])
 	  #endif
 	  do 
             { // while(!quitting)
-	      double successrate = 0.0;
+	      //double successrate = 0.0;
 	                 
 	      fftlen = f_f; // fftlen and AID change between tests, so be sure to reset them
 	      AID[0] = 0;
@@ -3789,13 +3895,13 @@ int main (int argc, char *argv[])
 	      printf("Gotten assignment, about to call check().\n");
 	      #endif
 
-              if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
-                 guess_pminus1_bounds(q, tfdepth, llsaved, &b1, &g_b2, &successrate);
+             /* if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
+                 guess_pminus1_bounds(q, tfdepth, llsaved, 25, &b1, &g_b2, &successrate);
               }
               if (g_b1_commandline > 0) b1 = g_b1_commandline;
               if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
               if ((g_b1_commandline == 0) && (g_b2_commandline == 0))
-                 printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);
+                 printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);*/
               check_pm1 (q, 0);
 	  
 	      if(!quitting) // Only clear assignment if not killed by user, i.e. test finished 
@@ -3811,14 +3917,14 @@ int main (int argc, char *argv[])
       {
 	if (!valid_assignment(q, fftlen)) {printf("\n");} //! v_a prints warning
 	else {
-              double successrate;
+             /* double successrate;
               if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
-                 guess_pminus1_bounds(q, 74, 2, &b1, &g_b2, &successrate);
+                 guess_pminus1_bounds(q, 74, 2, 25, &b1, &g_b2, &successrate);
               }
               if (g_b1_commandline > 0) b1 = g_b1_commandline;
               if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
               if ((g_b1_commandline == 0) && (g_b2_commandline == 0))
-                 printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);
+                 printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);*/
               check_pm1 (q, 0);
         }
       }
@@ -4081,11 +4187,11 @@ while (argc > 1)
 	  argc--;
 	}
     }
-    if (g_d_commandline%30 != 0) {
+    if (g_d_commandline%6 != 0) {
 	printf("-d2 must be a multiple of 30, 210, or 2310.\n");
 	exit(3);
     }
-    if ((g_e%2 != 0) || (g_e < 2) || (g_e > 12)) {
+    if ((g_e%2 != 0) || (g_e < 0) || (g_e > 12)) {
 	printf("-e2 must be 2, 4, 6, 8, 10, or 12.\n");
 	exit(3);
     }
