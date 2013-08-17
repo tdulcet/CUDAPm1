@@ -31,8 +31,6 @@ char program[] = "CUDAPm1 v0.10";
 
 #include "cuda_safecalls.h"
 #include "parse.h"
-//#include "kernel.h"
-//#include "erato.h"
 
 #ifdef _MSC_VER
 #define strncasecmp strnicmp // _strnicmp
@@ -55,7 +53,7 @@ double *g_ttmp, *g_ttp1;
 double *g_x, *g_y, *g_save, *g_ct;
 double *e_data;
 double *rp_data;
-int *g_xint;
+int *g_xint, *x_int;
 
 char *size;
 int threads1, threads2 = 256, threads3= 128; 
@@ -109,8 +107,7 @@ __global__ void square (int n,
   if (j2)
     {
       int nminusj = n - j;
-
-      wkr = 0.5 - ct[nc - j2];
+	  wkr = 0.5 - ct[nc - j2];
       wki = ct[j2];
       ajr = a[j];
       aji = a[1 + j];
@@ -412,6 +409,25 @@ __device__ static double __rintd (double z)
   
   asm ("cvt.rni.f64.f64 %0, %1;": "=d" (y):"d" (z));
   return (y);
+}
+
+__global__ void apply_weights (double *g_out,
+                                 int *g_in,
+                                 double *g_ttmp)
+{
+  int val[2], numbits[2] = {g_qn[0],g_qn[0]};
+  double ttp_temp[2];
+  const int index = (blockIdx.x * blockDim.x + threadIdx.x) << 1;
+ 
+  val[0] = g_in[index];
+  val[1] = g_in[index + 1];
+  ttp_temp[0] = g_ttmp[index];
+  ttp_temp[1] = g_ttmp[index + 1];
+  if(ttp_temp[0] < 0.0) numbits[0]++;
+  if(ttp_temp[1] < 0.0) ttp_temp[1] = -ttp_temp[1];
+  ttp_temp[0] *= -g_ttp_inc[numbits[0] == g_qn[0]];
+  g_out[index] = (double) val[0] * ttp_temp[0];
+  g_out[index + 1] = (double) val[1] * ttp_temp[1];
 }
 
 __global__ void norm1a (double *g_in,
@@ -1037,7 +1053,7 @@ void reset_err(float* maxerr, float value)
 
 
 float
-lucas_square (double *x, int q, int n, int iter, int last, float* maxerr, int error_flag, int bit, int stage)
+lucas_square (/*double *x,*/ int q, int n, int iter, int last, float* maxerr, int error_flag, int bit, int stage, int chkpt)
 {
   float terr = 0.0;
   
@@ -1052,13 +1068,13 @@ lucas_square (double *x, int q, int n, int iter, int last, float* maxerr, int er
     
   if(!bit)
   {
-    norm1a <<<n / (2 * threads1), threads1 >>> (g_x, g_datai, g_xint, g_ttmp, g_carryi, g_err, *maxerr, 0);
-    norm2a <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_x, g_xint, n, threads1, g_datai, g_carryi, g_ttp1, 0);
+    norm1a <<<n / (2 * threads1), threads1 >>> (g_x, g_datai, g_xint, g_ttmp, g_carryi, g_err, *maxerr, chkpt);
+    norm2a <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_x, g_xint, n, threads1, g_datai, g_carryi, g_ttp1, chkpt);
   }
   else
   {
-    norm1b <<<n / (2 * threads1), threads1 >>> (g_x, g_datal, g_xint, g_ttmp, g_carryl, g_err, *maxerr, 0);
-    norm2b <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_x, g_xint, n, threads1, g_datal, g_carryl, g_ttp1, 0);
+    norm1b <<<n / (2 * threads1), threads1 >>> (g_x, g_datal, g_xint, g_ttmp, g_carryl, g_err, *maxerr, chkpt);
+    norm2b <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_x, g_xint, n, threads1, g_datal, g_carryl, g_ttp1, chkpt);
   }
 
   if (error_flag)
@@ -1088,6 +1104,24 @@ void init_x(double *x, unsigned *x_packed, int q, int n, int *stage)
   cudaMemcpy (g_x, x, sizeof (double) * n , cudaMemcpyHostToDevice);
 }
 
+void init_x_int(int *x_int, unsigned *x_packed, int q, int n, int *stage)
+{
+  int j;
+
+  if(*stage == 0)
+  { 
+    *stage = 1;
+    for(j = 0; j < n; j++) x_int[j] = 0;
+    x_int[0] = 1;
+    if(x_packed)
+    {
+      for(j = 0; j < (q + 31) /32; j++) x_packed[j] = 0;
+      x_packed[0] = 1;
+    }
+  }
+  cudaMemcpy (g_xint, x_int, sizeof (int) * n , cudaMemcpyHostToDevice);
+}
+
 void E_init_d(double *g, double value, int n)
 {
   double x[1] = {value};
@@ -1112,14 +1146,14 @@ void E_mul(double *g_out, double *g_in1, double *g_in2, int n, float err, int ff
   norm2a <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_out, g_xint, n, threads1, g_datai, g_carryi, g_ttp1, 0);
 }
 
-void E_sub_mul(double *g_out, double *g_in1, double *g_in2, double *g_in3, int n, float err)
+void E_sub_mul(double *g_out, double *g_in1, double *g_in2, double *g_in3, int n, float err, int chkpt)
 {
   
   cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_in1, (cufftDoubleComplex *) g_in1, CUFFT_INVERSE));
   sub_mul <<<n / (4 * threads2), threads2>>> (g_out, g_in1, g_in2, g_in3, g_ct, n);
   cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_out, (cufftDoubleComplex *) g_out, CUFFT_INVERSE));
-  norm1a <<<n / (2 * threads1), threads1 >>> (g_out, g_datai, g_xint, g_ttmp, g_carryi, g_err, err, 0);
-  norm2a <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_out, g_xint, n, threads1, g_datai, g_carryi, g_ttp1, 0);
+  norm1a <<<n / (2 * threads1), threads1 >>> (g_out, g_datai, g_xint, g_ttmp, g_carryi, g_err, err, chkpt);
+  norm2a <<< (n / (2 * threads1) + threads3 - 1) / threads3, threads3 >>> (g_out, g_xint, n, threads1, g_datai, g_carryi, g_ttp1, chkpt);
 }
 
 void E_half_mul(double *g_out, double *g_in1, double *g_in2, int n, float err)
@@ -1204,6 +1238,7 @@ void get_weights(int q, int n)
   ttmp = (double *) malloc (sizeof (double) * (n));
   ttp = (double *) malloc (sizeof (double) * (n));
   size = (char *) malloc (sizeof (char) * n);
+  x_int = (int *) malloc (sizeof (int) * n);
 
   b = q % n;
   c = n - b;
@@ -1298,6 +1333,7 @@ void free_host (double *x)
   free ((char *) x);
   free ((char *) ttmp);
   free ((char *) ttp);
+  free ((char *) x_int);
 }
 
 void free_gpu(void)
@@ -1339,23 +1375,30 @@ extra paramter that we can adjust on the fly. In check(), index starts as -1,
 the default. In that case, choose from the table. If index >= 0, we must assume
 it's an override index and return the corresponding length. If index > table-count,
 then we assume it's a manual fftlen and return the proper index. */
-
+/*
   #define COUNT 160
   int multipliers[COUNT] = {  //this batch from GTX570 timings
-    2,     8,    10,    14,    16,    18,    20,    32,    36,    42,
-   48,    50,    56,    60,    64,    70,    80,    84,    96,   112,
-  120,   126,   128,   144,   160,   162,   168,   180,   192,   224,
-  256,   288,   320,   324,   336,   360,   384,   392,   400,   448,
-  512,   576,   640,   648,   672,   720,   768,   784,   800,   864,
-  896,   900,  1024,  1152,  1176,  1280,  1296,  1344,  1440,  1568,
- 1600,  1728,  1792,  2048,  2160,  2304,  2352,  2592,  2688,  2880,
- 3024,  3136,  3200,  3584,  3600,  4096,  4320,  4608,  4704,  5120,
- 5184,  5600,  5760,  6048,  6144,  6272,  6400,  6480,  7168,  7200,
- 7776,  8064,  8192,  8640,  9216,  9408, 10240, 10368, 10584, 10800,
-11200, 11520, 12096, 12288, 12544, 12960, 13824, 14336, 14400, 16384,
-
-                           // this batch from titan timings
-                           /*     2,     4,     8,    14,    20,    28,    36,    56,    72,    80,
+                                2,     8,    10,    14,    16,    18,    20,    32,    36,    42,
+                               48,    50,    56,    60,    64,    70,    80,    84,    96,   112,
+                              120,   126,   128,   144,   160,   162,   168,   180,   192,   224,
+                              256,   288,   320,   324,   336,   360,   384,   392,   400,   448,
+                              512,   576,   640,   648,   672,   720,   768,   784,   800,   864,
+                              896,   900,  1024,  1152,  1176,  1280,  1296,  1344,  1440,  1568,
+                             1600,  1728,  1792,  2048,  2160,  2304,  2352,  2592,  2688,  2880,
+                             3024,  3136,  3200,  3584,  3600,  4096,  4320,  4608,  4704,  5120,
+                             5184,  5600,  5760,  6048,  6144,  6272,  6400,  6480,  7168,  7200,
+                             7776,  8064,  8192,  8640,  9216,  9408, 10240, 10368, 10584, 10800,
+                            11200, 11520, 12096, 12288, 12544, 12960, 13824, 14336, 14400, 16384,
+                            17496, 18144, 19208, 19600, 20000, 20250, 21952, 23328, 23814, 24300,
+                            24500, 25088, 25600, 26244, 27000, 27216, 28000, 28672, 31104, 31250,
+                            32000, 32400, 32768, 33614, 34992, 36000, 36288, 38416, 39200, 39366,
+                            40500, 41472, 42336, 43200, 43904, 47628, 49000, 50000, 50176, 51200,
+                            52488, 54432, 55296, 56000, 57344, 60750, 62500, 64000, 64800, 65536 };
+*/
+///*
+  #define COUNT 142
+  int multipliers[COUNT] = {  // this batch from titan timings
+                                2,     4,     8,    14,    20,    28,    36,    56,    72,    80,
                                98,   100,   108,   112,   128,   140,   144,   162,   168,   200,
                               216,   224,   256,   280,   324,   392,   400,   432,   512,   540,
                               576,   648,   686,   784,   800,   864,  1000,  1024,  1080,  1296,
@@ -1364,12 +1407,13 @@ then we assume it's a manual fftlen and return the proper index. */
                              5832,  6048,  6250,  6272,  6400,  6480,  7776,  8000,  8192,  8748,
                              9072,  9216,  9604,  9800, 10000, 10976, 11200, 11664, 12000, 12150,
                             12250, 12500, 12544, 12800, 12960, 13122, 13608, 15552, 15876, 16000,
-                            16200, 16384,*/ 17496, 18144, 19208, 19600, 20000, 20250, 21952, 23328,
+                            16200, 16384, 17496, 18144, 19208, 19600, 20000, 20250, 21952, 23328,
                             23814, 24300, 24500, 25088, 25600, 26244, 27000, 27216, 28000, 28672,
                             31104, 31250, 32000, 32400, 32768, 33614, 34992, 36000, 36288, 38416,
                             39200, 39366, 40500, 41472, 42336, 43200, 43904, 47628, 49000, 50000,
                             50176, 51200, 52488, 54432, 55296, 56000, 57344, 60750, 62500, 64000,
                             64800, 65536 };
+//*/
   // Support up to 64M, the maximum length with threads == 1024
 
    if( 0 < *index && *index < COUNT ) // override
@@ -1546,6 +1590,39 @@ int standardize_digits (double *x, int q, int n, int offset, int num_digits)
   return(0);
 }
 
+int standardize_digits_int (int *x_int, int q, int n, int offset, int num_digits)  
+{
+  int j, digit, stop, qn = q / n, carry = 0;
+  int temp;
+  int lo = 1 << qn;
+  int hi = lo << 1;
+
+  digit = floor(offset * (n / (double) q));
+  j = (n + digit - 1) % n;
+  while(x_int[j] == 0 && j != digit) j = (n + j - 1) % n;
+  if(j == digit && x_int[digit] == 0) return(1);
+  else if (x_int[j] < 0) carry = -1;
+  {  
+    stop = (digit + num_digits) % n;
+    j = digit;
+    do
+    {
+      x_int[j] += carry;
+      carry = 0;
+      if (size[j]) temp = hi;
+      else temp = lo;
+      if(x_int[j] < 0)
+      {
+        x_int[j] += temp;
+        carry = -1;
+      }
+      j = (j + 1) % n;
+    }
+    while(j != stop);
+  }
+  return(0);
+}
+
 void balance_digits(double* x, int q, int n)
 {
   double half_low = (double) (1 << (q / n - 1));
@@ -1574,6 +1651,37 @@ void balance_digits(double* x, int q, int n)
       carry = 1.0;
     }
     x[j] /= ttmp[j];
+  }
+  x[0] += carry; // Good enough for our purposes.
+}
+
+void balance_digits_int(int* x, int q, int n)
+{
+  int half_low = (1 << (q / n - 1));
+  int low = half_low << 1;
+  int high = low << 1;
+  int upper, adj, carry = 0;
+  int j;
+ 
+  for(j = 0; j < n; j++)
+  { 
+    if(size[j])
+    {
+      upper = low;
+      adj = high;
+    }
+    else
+    {
+      upper = half_low;
+      adj = low;
+    }
+    x[j] += carry;
+    carry = 0;
+    if(x[j] >= upper)
+    {
+      x[j] -= adj;
+      carry = 1;
+    }
   }
   x[0] += carry; // Good enough for our purposes.
 }
@@ -1732,6 +1840,28 @@ void pack_bits(double *x, unsigned *packed_x, int q , int n)
   packed_x[j] = (unsigned) temp2;  
 }
 
+void pack_bits_int(int *x_int, unsigned *packed_x, int q , int n)
+{
+  unsigned long long temp1, temp2 = 0;
+  int i, j = 0, k = 0;
+  int qn = q / n;
+
+  for(i = 0; i < n; i++)
+  {
+    temp1 = x_int[i];
+    temp2 += (temp1 << k);
+    k += qn + size[i];
+    if(k >= 32)
+    {
+      packed_x[j] = (unsigned) temp2;
+      temp2 >>= 32;
+      k -= 32;
+      j++;
+    }
+  }
+  packed_x[j] = (unsigned) temp2;  
+}
+
 void set_checkpoint_data(unsigned *x_packed, int q, int n, int j, int stage, int time)
 {
   int end = (q + 31) / 32;
@@ -1787,8 +1917,7 @@ write_st2_checkpoint (unsigned *x_packed, int q)
 
 
 
-int
-printbits (double *x, int q, int n, int offset, FILE* fp, char *expectedResidue, int o_f)
+int printbits (double *x, int q, int n, int offset, FILE* fp, char *expectedResidue, int o_f)
 { 
   int j, k = 0;
   int digit, bit;
@@ -1800,6 +1929,41 @@ printbits (double *x, int q, int n, int offset, FILE* fp, char *expectedResidue,
     while(k < 64)
     {
       temp = (int) x[j];
+      residue = residue + (temp << k);
+      k += q / n + size[j % n];
+      if(j == digit) 
+      {  
+         k -= bit;
+         residue >>= bit;
+      }
+      j = (j + 1) % n;
+    }
+    sprintf (s_residue, "%016llx", residue);
+
+    printf ("M%d, 0x%s,", q, s_residue);
+    //if(o_f) printf(" offset = %d,", offset); 
+    printf (" n = %dK, %s", n/1024, program);
+    if (fp)
+    {
+      fprintf (fp, "M%d, 0x%s,", q, s_residue);
+      if(o_f) fprintf(fp, " offset = %d,", offset); 
+      fprintf (fp, " n = %dK, %s", n/1024, program);
+    }
+  return 0;
+}
+
+int printbits_int (int *x_int, int q, int n, int offset, FILE* fp, char *expectedResidue, int o_f)
+{ 
+  int j, k = 0;
+  int digit, bit;
+  unsigned long long temp, residue = 0;
+
+    digit = floor(offset *  (n / (double) q));
+    bit = offset - ceil(digit * (q / (double) n));
+    j = digit;
+    while(k < 64)
+    {
+      temp = x_int[j];
       residue = residue + (temp << k);
       k += q / n + size[j % n];
       if(j == digit) 
@@ -1848,6 +2012,34 @@ void unpack_bits(double *x, unsigned *packed_x, int q , int n)
     else mask = mask2;
     temp3 = ((int) temp2) & mask;
     x[i] = (double) temp3;
+    temp2 >>= (qn + size[i]);
+    k -= (qn + size[i]);
+  }
+}
+
+void unpack_bits_int(int *x_int, unsigned *packed_x, int q , int n)
+{
+  unsigned long long temp1, temp2 = 0;
+  int i, j = 0, k = 0;
+  int qn = q / n;
+  int mask1 = -1 << (qn + 1);
+  int mask2;
+  int mask;
+  
+  mask1 = ~mask1;
+  mask2 = mask1 >> 1;
+  for(i = 0; i < n; i++)
+  {
+    if(k < qn + size[i])
+    {
+      temp1 = packed_x[j];
+      temp2 += (temp1 << k);
+      k += 32;
+      j++;
+    }
+    if(size[i]) mask = mask1;
+    else mask = mask2;
+    x_int[i] = ((int) temp2) & mask;
     temp2 >>= (qn + size[i]);
     k -= (qn + size[i]);
   }
@@ -1928,6 +2120,49 @@ double* init_lucas_packed(unsigned * x_packed, int q , int *n, int *j, int *stag
   return x;
 }
 
+int* init_lucas_packed_int(unsigned * x_packed, int q , int *n, int *j, int *stage, int *total_time)
+{
+  int *x;
+  int new_n, old_n;
+  int end = (q + 31) / 32;
+  int new_test = 0;
+  
+  *n = x_packed[end + 1];
+  if(*n == 0) new_test = 1;
+  *j = x_packed[end + 2];
+  *stage = x_packed[end + 3];
+  if(total_time) *total_time = x_packed[end + 4];
+  
+  old_n = fftlen; 
+  if(fftlen == 0) fftlen = *n;
+  new_n = choose_fft_length(q, &fftlen); 
+  if(old_n > COUNT) *n = old_n;
+  else if (new_test || old_n) *n = new_n;
+
+  if ((*n / threads1) > 65535)
+  {
+    fprintf (stderr, "over specifications Grid = %d\n", (int) *n / threads1);
+    fprintf (stderr, "try increasing threads (%d) or decreasing FFT length (%dK)\n\n",  threads1, *n / 1024);
+    return NULL;
+  }
+  if (q < *n)
+  {
+    fprintf (stderr, "The prime %d is less than the fft length %d. This will cause problems.\n\n", q, *n / 1024);
+    return NULL;
+  }
+  x = (int *) malloc (sizeof (int) * *n);
+  get_weights(q, *n);
+  alloc_gpu_mem(*n);
+  write_gpu_data(q, *n);
+  if(!new_test)
+  {
+    unpack_bits_int(x, x_packed, q, *n);
+    balance_digits_int(x, q, *n);
+  }
+  init_x_int(x, x_packed, q, *n, stage);
+  return x;
+}
+
 void
 cufftbench (int cufftbench_s, int cufftbench_e, int cufftbench_d)
 {
@@ -1974,8 +2209,8 @@ void
 SetQuitting (int sig)
 {
   quitting = 1;
- sig==SIGINT ? printf( "\tSIGINT") : (sig==SIGTERM ? printf( "\tSIGTERM") : printf( "\tUnknown signal")) ;
- printf( " caught, writing checkpoint.");
+  sig==SIGINT ? printf( "\tSIGINT") : (sig==SIGTERM ? printf( "\tSIGTERM") : printf( "\tUnknown signal")) ;
+  printf( " caught, writing checkpoint.\n");
 }
 
 #ifndef _MSC_VER
@@ -2039,7 +2274,7 @@ int round_off_test(double *x, int q, int n, int *j, int *offset, unsigned *contr
       for (k = 0; k < 1000 && k < last; k++) 
 	    {
         bit = get_bit(last - k - 1, control);
-        terr = lucas_square (x, q, n, k, last, &maxerr, 1, bit, 1); 
+        terr = lucas_square (/*x,*/ q, n, k, last, &maxerr, 1, bit, 1, 0); 
         if(terr > maxerr) maxerr = terr;
         if(terr > max_err) max_err = terr;
         if(terr > max_err1) max_err1 = terr;
@@ -2142,7 +2377,7 @@ unsigned *get_control(int *j, int lim1, int lim2, int q)
   return control;
 }
 
-int get_gcd(double *x, unsigned *x_packed, int q, int n, int stage)
+int get_gcd(unsigned *x_packed, int q, int n, int stage)
 {
   	  mpz_t result, prime, prime1;
 	    int end = (q + 31) / 32;
@@ -2396,19 +2631,21 @@ void guess_pminus1_bounds (
 /* purposes even if different D and E values are picked.  See */
 /* choose_pminus1_plan for a description of the costs of P-1 stage 2. */
 
+/* For cudapm1, we're not set up for e = 1, assume e = 2 in both cases*/
+
 	logB2 = log ((double) guess_B2);
 	numprimes = (unsigned long) (guess_B2 / (logB2 - 1.0) - guess_B1 / (logB1 - 1.0));
 	if (guess_B2 <= guess_B1) {
 		pass2_squarings = 0.0;
 	} else if (vals <= 8) {		/* D = 210, E = 1, passes = 48/temps */
 		unsigned long num_passes;
-		num_passes = (unsigned long) ceil (48.0 / (vals));
+		num_passes = (unsigned long) ceil (48.0 / (vals - 3));
 		pass2_squarings = ceil ((guess_B2 - guess_B1) / 210.0) * num_passes;
 		pass2_squarings += numprimes * 1.1;
 	} else {
 		unsigned long num_passes;
 		double	numpairings;
-		num_passes = (unsigned long) ceil (480.0 / (vals));
+		num_passes = (unsigned long) ceil (480.0 / (vals - 3));
 		numpairings = (unsigned long)
 			(numprimes / 2.0 * numprimes / ((guess_B2-guess_B1) * 480.0/2310.0));
 		pass2_squarings = 2400.0 + num_passes * 90.0; /* setup costs */
@@ -2421,8 +2658,10 @@ void guess_pminus1_bounds (
 /* These include: better L2 cache usage and no calls to the faster */
 /* gwsquare routine.  Nov, 2009:  On my Macbook Pro, with exponents */
 /* around 45M and using 800MB memory, pass2 squarings are 40% slower. */	
+
 /* Owftheevil reports that CUDA squarings are only about 2% slower. */
 /* New normaliztion kernels benefit stage 1 more than stage 2, back to 9% */
+
 	pass2_squarings *= 1.09;  // was 1.35
 
 /* What is the "average" value that must be smooth for P-1 to succeed? */
@@ -2545,11 +2784,12 @@ int stage2_init_param3(int e, int n, int trans, float *err)
 { 
   int j, i, k = 0;
   mpz_t exponent;
-  long long b[e/2 + 1];
+  long long *b =  (long long*) malloc(e/2+1 * sizeof(long long));
+
   
   for(i = 0; i <= e/2; i++)
   {
-    b[i] = pow(2 * i + 1,e/2);
+    //b[i] = pow(2 * i + 1,e/2);
     b[i] *= b[i];
   }
   for(i = e/2; i > 0; i--)
@@ -2583,12 +2823,11 @@ int stage2_init_param3(int e, int n, int trans, float *err)
 	    trans++;
     }
   }
-  //pre_mul <<<n / (4 * threads2), threads2>>> (n, &e_data[e * n], g_ct);
   E_pre_mul(&e_data[e * n], &e_data[e * n], n, 0);
   E_pre_mul(&e_data[0], &e_data[0], n, 1);
   trans++;
   mpz_clear(exponent);
-
+  free(b);
   return trans;
 }
 
@@ -3023,7 +3262,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
   m = k - 1;
   j = 0;
   rp = 0;
-  uint8 tprimes[rpt / 8];
+  uint8 *tprimes = (uint8*) malloc(rpt / 8 * sizeof(uint8));
   int l = 0;
   while(m < ke)
   {
@@ -3055,6 +3294,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
       rp += rpt >> 3;
     }
   }
+  free(tprimes);
   printf("Zeros: %d, Ones: %d, Pairs: %d\n", count0, count1, count2);
 
 
@@ -3134,9 +3374,8 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
 
     if(!quitting)
     {
-      printf("done. Time: %0.2f, transforms: %d, average: %0.4f ms/tran, error: %0.5f, ETA ", 
-            time / 1000000.0, num_tran, time / (float) (num_tran * 1000), err);
-      if(m == 0 and k == ks) printf("NA");
+      printf("done. transforms: %d, err = %0.5f, (%0.2f real, %0.4f ms/tran,  ETA ", num_tran,  err, time / 1000000.0, time / (float) (num_tran * 1000));
+      if(m == 0 && k == ks) printf("NA");
       else print_time_from_seconds((int) (itime * ((double) itran_tot/itran_done - 1) + ptime * ((double) ptran_tot / ptran_done - 1)));
     }
     printf(")\n");
@@ -3159,11 +3398,17 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
 
     for( ; k < ke && !quitting; k += 2)
     {
+      int t_last = -1;
+      {
+        i = nrp - 1;
+        while(i && !mpz_tstbit (control, t + i)) i--;
+        if(i) t_last = t + i;
+      }
       for(j = 0; j < nrp; j++)
       {
         if(mpz_tstbit (control, t))
         {
-          E_sub_mul(g_x, g_x, &e_data[0], &rp_data[j * n], n, err);
+          E_sub_mul(g_x, g_x, &e_data[0], &rp_data[j * n], n, err, t == t_last);
           num_tran += 2;
           if(num_tran % 200 == 0)
           {
@@ -3194,9 +3439,9 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
         if(quitting == 1) cutilSafeCall (cudaMemcpy (&err, g_err, sizeof (float), cudaMemcpyDeviceToHost));
         if(err <= 0.4f)
         {
-          cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
-          standardize_digits(x, q, n, 0, n);
-	        pack_bits(x, x_packed, q, n);
+          cutilSafeCall (cudaMemcpy (x_int, g_xint, sizeof (int) * n, cudaMemcpyDeviceToHost));
+          standardize_digits_int(x_int, q, n, 0, n);
+	        pack_bits_int(x_int, x_packed, q, n);
           x_packed[end + 13] = nrp;
           if(k < ke - 1)
           {
@@ -3219,7 +3464,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
           x_packed[end + 21] = ptime;
           write_st2_checkpoint(x_packed, q);
           printf ("Transforms: %5d ", num_tran - tran_save);
-          printbits (x, q, n, 0, 0, NULL, 0);
+          printbits_int (x_int, q, n, 0, 0, NULL, 0);
 	        printf (" err = %5.5f (", err);
 	        print_time_from_seconds ((int) time1.tv_sec - time0.tv_sec);
 	        printf (" real, %4.4f ms/tran, ETA ", time / 1000.0 / (num_tran - tran_save));
@@ -3256,7 +3501,8 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
 int
 check_pm1 (int q, char *expectedResidue)
 {
-  int n, j, last = 0, error_flag;
+  int n, j, last = 0;
+  int error_flag, checkpoint_flag;
   double  *x = NULL;
   unsigned *x_packed = NULL;
   float maxerr = 0.0f, terr;
@@ -3268,7 +3514,6 @@ check_pm1 (int q, char *expectedResidue)
   unsigned *control = NULL;
   int stage = 0, st1_factor = 0;
   size_t global_mem, free_mem, use_mem;
-  //int /*ptest,*/ //nrp_max;
   
   signal (SIGTERM, SetQuitting);
   signal (SIGINT, SetQuitting);
@@ -3301,21 +3546,12 @@ check_pm1 (int q, char *expectedResidue)
       else printf("No stage 2 checkpoint.\n");
     }  
 
+    g_d = g_d_commandline;
     if(g_nrp == 0) g_nrp = (free_mem/n - 75)/8;
 #ifdef _MSC_VER
     if (g_nrp > (4096/sizeof(double))*1024*1024/n)
         g_nrp = (4096/sizeof(double))*1024*1024/n; // Max single allocation of 4 GB on Windows?
 #endif 
-    double successrate = 0.0;
-    if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
-      guess_pminus1_bounds(q, tfdepth, llsaved, g_nrp, &b1, &g_b2, &successrate);
-    }
-    if (g_b1_commandline > 0) b1 = g_b1_commandline;
-    if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
-    if ((g_b1_commandline == 0) && (g_b2_commandline == 0))
-      printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);
-
-    g_d = g_d_commandline;
     if(g_nrp < 4) g_nrp = 4;
     use_mem = (size_t) ((75 + 8*(g_nrp)) * (size_t) n);
 #ifdef _MSC_VER
@@ -3325,6 +3561,15 @@ check_pm1 (int q, char *expectedResidue)
 #endif
     if (free_mem < use_mem)
        printf("WARNING:  There may not be enough GPU memory for stage 2!\n");
+
+    double successrate = 0.0;
+    if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
+      guess_pminus1_bounds(q, tfdepth, llsaved, g_nrp, &b1, &g_b2, &successrate);
+    }
+    if (g_b1_commandline > 0) b1 = g_b1_commandline;
+    if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
+    if ((g_b1_commandline == 0) && (g_b2_commandline == 0))
+      printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);
 
     if(x_packed[(q + 31)/32 + 5] == 0)  x_packed[(q + 31)/32 + 5] = b1;
     else
@@ -3366,9 +3611,17 @@ check_pm1 (int q, char *expectedResidue)
     {
 	    if ((j % 100) == 0) error_flag = 1;
 	    else error_flag = 0;
+      if ((j % checkpoint_iter == 0) || j == last) checkpoint_flag = 1;
+      else checkpoint_flag = error_flag;
       bit = get_bit(last - j, control);
-      terr = lucas_square (x, q, n, j, last, &maxerr, error_flag, bit, stage);//error_flag);
-      if (error_flag || quitting)
+      terr = lucas_square (q, n, j, last, &maxerr, error_flag, bit, stage, checkpoint_flag);
+      if(quitting == 1 && !checkpoint_flag)
+	    {      
+	      j++;
+        bit = get_bit(last - j, control);
+	      terr = lucas_square (q, n, j, last, &maxerr, 1, bit, stage, 1);
+	    }
+      if (error_flag || quitting == 1)
 	    { 
 	      if (terr >= 0.40)
 		    {
@@ -3380,26 +3633,19 @@ check_pm1 (int q, char *expectedResidue)
       {
 	      if(quitting < 2)
 	      {
-	        cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
-          standardize_digits(x, q, n, 0, n);
+	        cutilSafeCall (cudaMemcpy (x_int, g_xint, sizeof (int) * n, cudaMemcpyDeviceToHost));
+          standardize_digits_int(x_int, q, n, 0, n);
 	        gettimeofday (&time1, NULL);
           total_time += (time1.tv_sec - start_time);
           start_time = time1.tv_sec;
           set_checkpoint_data(x_packed, q, n, j + 1, stage, total_time);
-	        pack_bits(x, x_packed, q, n);
+	        pack_bits_int(x_int, x_packed, q, n);
           write_checkpoint_packed (x_packed, q);
-	      }
-	      if(quitting)
-	      {
-	        printf(" Estimated time spent so far: ");
-	        print_time_from_seconds(total_time);
-	        printf("\n\n");
-		      j = last + 1;
-	      }
-	      else
+        }
+        if(quitting == 0)
         {
           printf ("Iteration %d ", j);
-          printbits (x, q, n, 0, 0, NULL, 0);
+          printbits_int (x_int, q, n, 0, 0, NULL, 0);
 	        long long diff = time1.tv_sec - time0.tv_sec;
 	        long long diff1 = 1000000 * diff + time1.tv_usec - time0.tv_usec;
 	        long long diff2 = (last - j) * diff1 / ((checkpoint_iter - j_resume) *  1e6);
@@ -3412,6 +3658,13 @@ check_pm1 (int q, char *expectedResidue)
 	        fflush (stdout);
 	        if(j_resume) j_resume = 0;
 	        reset_err(&maxerr, 0.85); // Instead of tracking maxerr over whole run, reset it at each checkpoint.
+	      }
+	      else
+	      {
+	        printf("Estimated time spent so far: ");
+	        print_time_from_seconds(total_time);
+	        printf("\n\n");
+		      j = last + 1;
 	      }
 	    }
       if ( k_f && !quitting && (!(j & 15)) && _kbhit()) interact(); // abstracted to clean up check()
@@ -3424,18 +3677,18 @@ check_pm1 (int q, char *expectedResidue)
 	    {
         free ((char *) control);
 	      gettimeofday (&time1, NULL);
-	      cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
-        standardize_digits(x, q, n, 0, n);
+	      cutilSafeCall (cudaMemcpy (x_int, g_xint, sizeof (int) * n, cudaMemcpyDeviceToHost));
+        standardize_digits_int(x_int, q, n, 0, n);
         set_checkpoint_data(x_packed, q, n, j + 1, 2, total_time);
-        pack_bits(x, x_packed, q, n);
+        pack_bits_int(x_int, x_packed, q, n);
         write_checkpoint_packed (x_packed, q);
-        printbits (x, q, n, 0, NULL , 0, 1); 
+        printbits_int (x_int, q, n, 0, NULL , 0, 1); 
         total_time += (time1.tv_sec - start_time);
         printf ("\nStage 1 complete, estimated total time = ");
         print_time_from_seconds(total_time);
         fflush (stdout);
         printf("\nStarting stage 1 gcd.\n");
-        st1_factor = get_gcd(x, x_packed, q, n, 1);
+        st1_factor = get_gcd(/*x,*/ x_packed, q, n, 1);
       }
       if(!st1_factor)
       {
@@ -3443,17 +3696,17 @@ check_pm1 (int q, char *expectedResidue)
         stage2(x, x_packed, q, n, maxerr);
 	      if(!quitting)
 	      {
-	        cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
-          if (!standardize_digits(x, q, n, 0, n))
+	        cutilSafeCall (cudaMemcpy (x_int, g_xint, sizeof (int) * n, cudaMemcpyDeviceToHost));
+          if (!standardize_digits_int(x_int, q, n, 0, n))
           { 
             set_checkpoint_data(x_packed, q, n, j + 1, 2, total_time);
-            pack_bits(x, x_packed, q, n);
+            pack_bits_int(x_int, x_packed, q, n);
             printf("Accumulated Product: ");
-            printbits (x, q, n, 0, NULL, 0, 0); 
+            printbits_int (x_int, q, n, 0, NULL, 0, 0); 
 	          printf("\n");
 	        }
 	        printf("Starting stage 2 gcd.\n");
-	        get_gcd(x, x_packed, q, n, 2);
+	        get_gcd(/*x,*/ x_packed, q, n, 2);
 	        rm_checkpoint(q, keep_s1);
 	      }
       }
@@ -3464,261 +3717,6 @@ check_pm1 (int q, char *expectedResidue)
   while (restarting);
   free ((char *) x_packed);
   return (0);
-}
-
-int
-check (int q, char *expectedResidue)
-{
-  int n, j, last = q - 2, error_flag;
-  double  *x = NULL;
-  unsigned *x_packed = NULL;
-  float maxerr, terr;
-  int restarting = 0;
-  timeval time0, time1;
-  int j_save = 0, offset_save = 0;
-  int total_time = 0, start_time;
-   // use start_total because every time we write a checkpoint, total_time is increased, 
-   // but we don't quit everytime we write a checkpoint
-  int offset;
-  int reset_fft = 0;
-  int j_resume = 0;
-  int interact_result = 0;
-  
-  signal (SIGTERM, SetQuitting);
-  signal (SIGINT, SetQuitting);
-  do
-  {				/* while (restarting) */
-    maxerr = 0.0;
-
-    if(!x_packed) x_packed = read_checkpoint_packed(q);
-    x = init_lucas_packed (x_packed, q, &n, &j, &offset, &total_time); 
-    if(!x) exit (2);
-
-    gettimeofday (&time0, NULL);
-    start_time = time0.tv_sec;
-    //last = q - 2;		/* the last iteration done in the primary loop */
- 
-    restarting = 0;
-    if(j == 1)
-    {
-      if(!restarting) printf ("Starting M%d fft length = %dK\n", q, n/1024);
-      //restarting = round_off_test(x, q, n, &j, &offset);
-    }
-    else if (!restarting) 
-    {
-      printf ("Continuing work from a partial result of M%d fft length = %dK iteration = %d\n", q, n/1024, j);
-      j_resume = j % checkpoint_iter - 1;
-    }
-    fflush (stdout);
-
-    //if( j == 1 ) restarting = round_off_test(x, q, n, &j, &offset);
- last = 2;
-    for (; !restarting && j <= last; j++) // Main LL loop
-    {
-	    if ((j % 100) == 0) error_flag = 1;
-	    else error_flag = 0;
-      terr = lucas_square (x, q, n, j, last, &maxerr, 1, 0,0);//error_flag);
-	    if ((j % checkpoint_iter) == 0 || quitting)
-      {
-	      cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
-        standardize_digits(x, q, n, 0, n);
-	      gettimeofday (&time1, NULL);
-	      //if(!expectedResidue)
-        //{
- 	          total_time += (time1.tv_sec - start_time);
-	          start_time = time1.tv_sec;
-        //}
-        set_checkpoint_data(x_packed, q, n, j + 1, offset, total_time);
-	      if(quitting)
-	      {
-          cutilSafeCall (cudaMemcpy (&terr, g_err, sizeof (float), cudaMemcpyDeviceToHost));
-	        if(terr < 0.35)
-	        {
-	          write_checkpoint_packed (x_packed, q);
-	        } 
-	        printf(" Estimated time spent so far: ");
-	        print_time_from_seconds(total_time);
-	        printf("\n\n");
-		      j = last + 1;
-	      }
-	      else
-        {
-          printf ("Iteration %d ", j);
-          printbits (x, q, n, offset, 0, expectedResidue, 0);
-	        long long diff = time1.tv_sec - time0.tv_sec;
-	        long long diff1 = 1000000 * diff + time1.tv_usec - time0.tv_usec;
-	        long long diff2 = (last - j) * diff1 / ((checkpoint_iter - j_resume) *  1e6);
-	        gettimeofday (&time0, NULL);
-	        printf (" err = %5.5f (", maxerr);
-	        print_time_from_seconds ((int) diff);
-	        printf (" real, %4.4f ms/iter, ETA ", diff1 / 1000.0 / (checkpoint_iter - j_resume));
-	        print_time_from_seconds ((int) diff2);
-	        printf (")\n");
-	        fflush (stdout);
-	        if(j_resume) j_resume = 0;
-	        reset_err(&maxerr, 0.85); // Instead of tracking maxerr over whole run, reset it at each checkpoint.
-	      }
-	    }
-      if (error_flag)
-	    { 
-	      if (terr >= 0.35)
-		    {
-		      if (t_f)
-	        {
-		        gettimeofday(&time1, NULL);
-		        printf ("Iteration = %d >= 1000 && err = %5.5g >= 0.35, fft length = %dK, writing checkpoint file (because -t is enabled) and exiting.\n\n", j, (double) terr, (int) n/1024);
-		        cutilSafeCall (cudaMemcpy (x, g_save, sizeof (double) * n, cudaMemcpyDeviceToHost));
-		        total_time += (time1.tv_sec - start_time);
-	          set_checkpoint_data(x_packed, q, n, j_save + 1, offset_save, total_time);
-	          write_checkpoint_packed (x_packed, q); 
-		      }
-		      printf ("Iteration = %d >= 1000 && err = %5.5g >= 0.35, fft length = %dK, restarting from last checkpoint with longer fft.\n\n", j, (double) terr, (int) n/1024);
-          fftlen++;
-          restarting = 1;
-          reset_fft = 1;
-          reset_err(&maxerr, 0.0);
-	      }
-	      else		// error_flag && terr < 0.35
-	      {
-	        int end = (q + 31) / 32;
-          if(x_packed[end + 3] != x_packed[end + 8])
-          {
-            write_checkpoint_packed (x_packed, q); 
-            if(reset_fft)
-            {  
-              printf("Sticking point passed. Switching back to shorter fft.\n");
-              fftlen--;
-              restarting = 1;
-              reset_fft = 0;
-              reset_err(&maxerr, 0.0);
-            }
-          }
-		      if (t_f)
-		      {
-		        copy_kernel <<< n / threads1, threads1 >>> (g_save, g_x);
-		        j_save = j;
-		        offset_save = offset;
-		      }
-		    }
-	    }  
-      if ( k_f && !quitting && (!(j & 15)) && _kbhit()) interact_result = interact(); // abstracted to clean up check()
-      if(interact_result == 2) reset_fft = 0;
-      if(interact_result == 1)
-      {  
-        if((j % checkpoint_iter) != 0)
-        {
-           cutilSafeCall (cudaMemcpy (&terr, g_err, sizeof (float), cudaMemcpyDeviceToHost));
-           if(terr < 0.35)
-           {
-		         cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
-             standardize_digits(x, q, n, 0, n);
-	           set_checkpoint_data(x_packed, q, n, j + 1, offset, total_time);
-             reset_err(&maxerr, 0.0);
-           }
-        }
-        restarting = 1;
-      } 
-	    interact_result = 0;
-	    fflush (stdout);	    
-	  } /* end main LL for-loop */
-	
-    if (!restarting && !quitting)
-	  { // done with test
-	    gettimeofday (&time1, NULL);
-	    FILE* fp = fopen_and_lock(RESULTSFILE, "a");
-	    if(!fp) 
-	    {
-	      fprintf (stderr, "Cannot write results to %s\n\n", RESULTSFILE);
-	      exit (1);
-	    }
-	    cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
-      if (standardize_digits(x, q, n, 0, n))
-      {
-        printf ("M( %d )P, n = %dK, %s", q, n / 1024, program);
-        if (fp) fprintf (fp, "M( %d )P, n = %dK, %s", q, n / 1024, program);
-      }
-	    else printbits (x, q, n, offset, fp, 0, 1); 
-      total_time += (time1.tv_sec - start_time);
-      printf (", estimated total time = ");
-      print_time_from_seconds(total_time);
-	  
-	    if( AID[0] && strncasecmp(AID, "N/A", 3) )  
-      { // If (AID is not empty), AND (AID is NOT "N/A") (case insensitive)
-        fprintf(fp, ", AID: %s\n", AID);
-	    } 
-      else fprintf(fp, "\n");
-	    unlock_and_fclose(fp);
-	    fflush (stdout);
-	    rm_checkpoint (q, 0);
-	    printf("\n\n");
-	          set_checkpoint_data(x_packed, q, n, j + 1, offset, total_time);
-	          write_checkpoint_packed (x_packed, q); 
-	  }
-    close_lucas (x);
-  }
-  while (restarting);
-  free ((char *) x_packed);
-  return (0);
-}
-
-int
-check_residue (int q, char *expectedResidue)
-{
-  int n, j, last, offset;
-  unsigned *x_packed = NULL;
-  double  *x = NULL;
-  float maxerr = 0.0;
-  int restarting = 0;
-  timeval time0, time1;
- 
-  do
-  {				
-    if(!x_packed) x_packed = read_checkpoint_packed(q);
-    x = init_lucas_packed (x_packed, q, &n, &j, &offset, NULL);
-    if(!x) exit (2);
-    gettimeofday (&time0, NULL);
-    if(!restarting) printf ("Starting self test M%d fft length = %dK\n", q, n/1024);
-    //restarting = round_off_test(x, q, n, &j, &offset);
-    if(restarting) close_lucas (x);
-  }
-  while (restarting);
-
-  fflush (stdout);
-  last = 10000;
-
-  for (; j <= last; j++)
-  {
-    lucas_square (x, q, n, j, last, &maxerr, 0, 0, 0);
-    if(j % 100 == 0) cutilSafeCall (cudaMemcpy (&maxerr, g_err, sizeof (float), cudaMemcpyDeviceToHost));
-  }
-  cutilSafeCall (cudaMemcpy (x, g_x, sizeof (double) * n, cudaMemcpyDeviceToHost));
-  standardize_digits(x, q, n, 0, n);
-  gettimeofday (&time1, NULL);
-
-  printf ("Iteration %d ", j - 1);
-  printbits (x, q, n, offset, 0, expectedResidue, 0);
-  long long diff = time1.tv_sec - time0.tv_sec;
-  long long diff1 = 1000000 * diff + time1.tv_usec - time0.tv_usec;
-  printf (" err = %5.5f (", maxerr);
-  print_time_from_seconds ((int) diff);
-  printf (" real, %4.4f ms/iter", diff1 / (1000.0 * last));
-  printf (")\n");
-
-  fftlen = 0;
-  close_lucas (x);
-  free ((char *) x_packed);
-  if (strcmp (s_residue, expectedResidue))
-  {
-    printf("Expected residue [%s] does not match actual residue [%s]\n\n", expectedResidue, s_residue);
-    fflush (stdout);	
-    return 1;    
-  }
-  else
-  {
-    printf("This residue is correct.\n\n");
-    fflush (stdout);	
-    return (0);
-  }
 }
 
 void parse_args(int argc, char *argv[], int* q, int* device_numer, 
@@ -3825,37 +3823,7 @@ int main (int argc, char *argv[])
   
   init_device (device_number);
 
-  if (r_f)
-    {
-      int bad_selftest = 0;
-      fftlen = 0;
-      bad_selftest += check_residue (86243, "23992ccd735a03d9");
-      bad_selftest += check_residue (132049, "4c52a92b54635f9e");
-      bad_selftest += check_residue (216091, "30247786758b8792");
-      bad_selftest += check_residue (756839, "5d2cbe7cb24a109a");
-      bad_selftest += check_residue (859433, "3c4ad525c2d0aed0");
-      bad_selftest += check_residue (1257787, "3f45bf9bea7213ea");
-      bad_selftest += check_residue (1398269, "a4a6d2f0e34629db");
-      bad_selftest += check_residue (2976221, "2a7111b7f70fea2f");
-      bad_selftest += check_residue (3021377, "6387a70a85d46baf");
-      bad_selftest += check_residue (6972593, "88f1d2640adb89e1");
-      bad_selftest += check_residue (13466917, "9fdc1f4092b15d69");
-      bad_selftest += check_residue (20996011, "5fc58920a821da11");
-      bad_selftest += check_residue (24036583, "cbdef38a0bdc4f00");
-      bad_selftest += check_residue (25964951, "62eb3ff0a5f6237c");
-      bad_selftest += check_residue (30402457, "0b8600ef47e69d27");
-      bad_selftest += check_residue (32582657, "02751b7fcec76bb1");
-      bad_selftest += check_residue (37156667, "67ad7646a1fad514");
-      bad_selftest += check_residue (42643801, "8f90d78d5007bba7");
-      bad_selftest += check_residue (43112609, "e86891ebf6cd70c4");
-      if (bad_selftest)
-      {
-        fprintf(stderr, "Error: There ");
-        bad_selftest > 1 ? fprintf(stderr, "were %d bad selftests!\n",bad_selftest) 
-        		 : fprintf(stderr, "was a bad selftest!\n");
-      }
-    }
-  else if (cufftbench_d)
+   if (cufftbench_d)
     cufftbench (cufftbench_s, cufftbench_e, cufftbench_d);
   else
     {
@@ -3883,7 +3851,6 @@ int main (int argc, char *argv[])
 	  #endif
 	  do 
             { // while(!quitting)
-	      //double successrate = 0.0;
 	                 
 	      fftlen = f_f; // fftlen and AID change between tests, so be sure to reset them
 	      AID[0] = 0;
@@ -3895,13 +3862,6 @@ int main (int argc, char *argv[])
 	      printf("Gotten assignment, about to call check().\n");
 	      #endif
 
-             /* if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
-                 guess_pminus1_bounds(q, tfdepth, llsaved, 25, &b1, &g_b2, &successrate);
-              }
-              if (g_b1_commandline > 0) b1 = g_b1_commandline;
-              if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
-              if ((g_b1_commandline == 0) && (g_b2_commandline == 0))
-                 printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);*/
               check_pm1 (q, 0);
 	  
 	      if(!quitting) // Only clear assignment if not killed by user, i.e. test finished 
@@ -3915,16 +3875,8 @@ int main (int argc, char *argv[])
       }
     else // Exponent passed in as argument
       {
-	if (!valid_assignment(q, fftlen)) {printf("\n");} //! v_a prints warning
-	else {
-             /* double successrate;
-              if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
-                 guess_pminus1_bounds(q, 74, 2, 25, &b1, &g_b2, &successrate);
-              }
-              if (g_b1_commandline > 0) b1 = g_b1_commandline;
-              if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
-              if ((g_b1_commandline == 0) && (g_b2_commandline == 0))
-                 printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);*/
+	      if (!valid_assignment(q, fftlen)) {printf("\n");} //! v_a prints warning
+	      else {
               check_pm1 (q, 0);
         }
       }
