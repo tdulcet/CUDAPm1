@@ -2792,7 +2792,6 @@ int stage2_init_param3(int e, int n, int trans, float *err)
     base = 2 * i + 1;
     b[i] = 1;
     for(j = 0; j < e / 2; j++) b[i] *= base;
-    //b[i] = pow(2 * i + 1,e/2);
     b[i] *= b[i];
   }
   for(i = e/2; i > 0; i--)
@@ -2819,7 +2818,6 @@ int stage2_init_param3(int e, int n, int trans, float *err)
   {
     mpz_set_ui (exponent, b[i]);
     trans = E_to_the_p(&e_data[2 * i * n], g_y, exponent, n, trans, err);
-printf("trans = %d, i = %d\n",trans,i);
     if(i > 0)
     {
       cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[2 * i * n], (cufftDoubleComplex *) &e_data[2 * i * n], CUFFT_INVERSE));
@@ -2872,13 +2870,11 @@ int stage2_init_param1(int k, int base, int e, int n, int trans, float *err)
   mpz_ui_pow_ui (exponent, base, e);
   trans = E_to_the_p(g_y, g_y, exponent, n, trans, err);
   mpz_clear(exponent);
-printf("\ntrans = %d\n",trans);
   if(k < 2 * e)
-{    for(j = 1; j <= k; j += 2)
+    for(j = 1; j <= k; j += 2)
     {
       trans = next_base1(j, e, n, trans, err);
       cutilSafeThreadSync();
-printf("trans = %d, j = %d, k = %d\n",trans,j,k);}
     }  
   else
   {
@@ -2889,7 +2885,7 @@ printf("trans = %d, j = %d, k = %d\n",trans,j,k);}
     for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2), e);
     for(j = 0; j < e; j++)
       for(i = e; i > j; i--) mpz_sub(exponents[i], exponents[i-1], exponents[i]);
-    for(j = 0; j <= e; j++) {trans = E_to_the_p(&e_data[j * n], g_y, exponents[j], n, trans, err); printf("trans = %d\n",trans);}
+    for(j = 0; j <= e; j++) trans = E_to_the_p(&e_data[j * n], g_y, exponents[j], n, trans, err);
     for(j = 0; j <= e; j++) mpz_clear(exponents[j]);
     E_pre_mul(&e_data[0], &e_data[0], n, 1);
     E_pre_mul(&e_data[e * n], &e_data[e * n], n, 1);
@@ -2897,7 +2893,6 @@ printf("trans = %d, j = %d, k = %d\n",trans,j,k);}
       cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[j * n], (cufftDoubleComplex *) &e_data[j * n], CUFFT_INVERSE));
     trans += e + 1;
   }
-printf("\n");
   return trans;
 }
 
@@ -3365,10 +3360,8 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
     printf("Inititalizing pass... ");
     num_tran = stage2_init_param4(nrp, m, d, e, n, rp_gaps, num_tran, &err); 
     temp_tran = num_tran;
-    printf("trans = %d\n",temp_tran);
     num_tran = stage2_init_param1(k, d, e, n, num_tran, &err);
     temp_tran = num_tran - temp_tran;
-    printf("trans = %d\n",temp_tran);
     itran_done += num_tran;
     if((m > 0 || k > ks) && fp)
     {
