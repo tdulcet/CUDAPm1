@@ -1249,9 +1249,9 @@ void get_weights(int q, int n)
   {
     bj += b;
     bj %= n;
-    a = bj - n;
-    ttmp[j] = exp2 (a / (double) n);
-    ttp[j] = exp2 (-a / (double) n);
+    a = n - bj;
+    ttmp[j] = exp2 (-a / (double) n);
+    ttp[j] = exp2 (a / (double) n);
     size[j] = (bj >= c);
   }
   size[0] = 1;
@@ -2782,13 +2782,16 @@ void guess_pminus1_bounds (
  **************************************************************/
 int stage2_init_param3(int e, int n, int trans, float *err)
 { 
-  int j, i, k = 0;
+  int j, i, k = 0, base;
   mpz_t exponent;
   long long *b =  (long long*) malloc(e/2+1 * sizeof(long long));
 
   
   for(i = 0; i <= e/2; i++)
   {
+    base = 2 * i + 1;
+    b[i] = 1;
+    for(j = 0; j < e / 2; j++) b[i] *= base;
     //b[i] = pow(2 * i + 1,e/2);
     b[i] *= b[i];
   }
@@ -2816,6 +2819,7 @@ int stage2_init_param3(int e, int n, int trans, float *err)
   {
     mpz_set_ui (exponent, b[i]);
     trans = E_to_the_p(&e_data[2 * i * n], g_y, exponent, n, trans, err);
+printf("trans = %d, i = %d\n",trans,i);
     if(i > 0)
     {
       cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[2 * i * n], (cufftDoubleComplex *) &e_data[2 * i * n], CUFFT_INVERSE));
@@ -2868,12 +2872,13 @@ int stage2_init_param1(int k, int base, int e, int n, int trans, float *err)
   mpz_ui_pow_ui (exponent, base, e);
   trans = E_to_the_p(g_y, g_y, exponent, n, trans, err);
   mpz_clear(exponent);
-
+printf("\ntrans = %d\n",trans);
   if(k < 2 * e)
-    for(j = 1; j <= k; j += 2)
+{    for(j = 1; j <= k; j += 2)
     {
       trans = next_base1(j, e, n, trans, err);
       cutilSafeThreadSync();
+printf("trans = %d, j = %d, k = %d\n",trans,j,k);}
     }  
   else
   {
@@ -2884,7 +2889,7 @@ int stage2_init_param1(int k, int base, int e, int n, int trans, float *err)
     for(j = e; j >= 0; j--) mpz_ui_pow_ui (exponents[j], (k - j * 2), e);
     for(j = 0; j < e; j++)
       for(i = e; i > j; i--) mpz_sub(exponents[i], exponents[i-1], exponents[i]);
-    for(j = 0; j <= e; j++) trans = E_to_the_p(&e_data[j * n], g_y, exponents[j], n, trans, err);
+    for(j = 0; j <= e; j++) {trans = E_to_the_p(&e_data[j * n], g_y, exponents[j], n, trans, err); printf("trans = %d\n",trans);}
     for(j = 0; j <= e; j++) mpz_clear(exponents[j]);
     E_pre_mul(&e_data[0], &e_data[0], n, 1);
     E_pre_mul(&e_data[e * n], &e_data[e * n], n, 1);
@@ -2892,6 +2897,7 @@ int stage2_init_param1(int k, int base, int e, int n, int trans, float *err)
       cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[j * n], (cufftDoubleComplex *) &e_data[j * n], CUFFT_INVERSE));
     trans += e + 1;
   }
+printf("\n");
   return trans;
 }
 
@@ -3355,11 +3361,14 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
   do
   {
     printf("Processing %d - %d of %d relative primes.\n", m + 1, m + nrp, rpt);
+    printf("nrp = %d, m = %d, d = %d, e = %d, num_tran = %d, k = %d.\n", nrp, m, d, e, num_tran, k);
     printf("Inititalizing pass... ");
     num_tran = stage2_init_param4(nrp, m, d, e, n, rp_gaps, num_tran, &err); 
     temp_tran = num_tran;
+    printf("trans = %d\n",temp_tran);
     num_tran = stage2_init_param1(k, d, e, n, num_tran, &err);
     temp_tran = num_tran - temp_tran;
+    printf("trans = %d\n",temp_tran);
     itran_done += num_tran;
     if((m > 0 || k > ks) && fp)
     {
@@ -3857,7 +3866,7 @@ int main (int argc, char *argv[])
 	                   
   	      error = get_next_assignment(input_filename, &q, &fftlen, &tfdepth, &llsaved, &AID);
                /* Guaranteed to write to fftlen ONLY if specified on workfile line, so that if unspecified, the pre-set default is kept. */
-	      if( error > 0) exit (2); // get_next_assignment prints warning message	  
+	      if( error > 0) exit (0); // get_next_assignment prints warning message	  
 	      #ifdef EBUG
 	      printf("Gotten assignment, about to call check().\n");
 	      #endif
