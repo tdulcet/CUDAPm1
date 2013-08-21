@@ -2784,8 +2784,8 @@ int stage2_init_param3(int e, int n, int trans, float *err)
 { 
   int j, i, k = 0, base;
   mpz_t exponent;
-  long long *b =  (long long*) malloc(e/2+1 * sizeof(long long));
-
+  //long long *b =  (long long*) malloc(e/2+1 * sizeof(long long));
+  long long b[7];
   
   for(i = 0; i <= e/2; i++)
   {
@@ -2829,7 +2829,7 @@ int stage2_init_param3(int e, int n, int trans, float *err)
   E_pre_mul(&e_data[0], &e_data[0], n, 1);
   trans++;
   mpz_clear(exponent);
-  free(b);
+  //free(b);
   return trans;
 }
 
@@ -3215,7 +3215,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
 
   cutilSafeCall (cudaMalloc ((void **) &e_data, sizeof (double) * n * (e + 1)));
   cutilSafeCall (cudaMalloc ((void **) &rp_data, sizeof (double) * n * nrp));
-
+  
   for( j = (b1 + 1) >> 1; j < ks; j++)
   {
     if(bprimes[j] == 1)
@@ -3356,7 +3356,7 @@ int stage2(double *x, unsigned *x_packed, int q, int n, float err)
   do
   {
     printf("Processing %d - %d of %d relative primes.\n", m + 1, m + nrp, rpt);
-    printf("nrp = %d, m = %d, d = %d, e = %d, num_tran = %d, k = %d.\n", nrp, m, d, e, num_tran, k);
+    //printf("nrp = %d, m = %d, d = %d, e = %d, num_tran = %d, k = %d.\n", nrp, m, d, e, num_tran, k);
     printf("Inititalizing pass... ");
     num_tran = stage2_init_param4(nrp, m, d, e, n, rp_gaps, num_tran, &err); 
     temp_tran = num_tran;
