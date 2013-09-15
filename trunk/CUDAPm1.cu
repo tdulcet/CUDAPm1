@@ -20,11 +20,12 @@ char program[] = "CUDAPm1 v0.10";
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+
 #ifdef _MSC_VER
 #define stat _stat
+#define strncasecmp strnicmp // _strnicmp
+#include <direct.h>
 #endif
-//#else
-//#include <direct.h>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -32,10 +33,6 @@ char program[] = "CUDAPm1 v0.10";
 
 #include "cuda_safecalls.h"
 #include "parse.h"
-
-#ifdef _MSC_VER
-#define strncasecmp strnicmp // _strnicmp
-#endif
 
 /* In order to have the gettimeofday() function, you need these includes on Linux:
 #include <sys/time.h>
@@ -56,12 +53,15 @@ double *rp_data;
 int *g_xint;
 
 char *size;
-int threads1, threads2 = 256, threads3= 256;
-float *g_err;
+int threads1, threads2 = 256, threads3= 128;
+float *g_err, g_max_err = 0.0f;
 int *g_datai, *g_carryi;
 long long int *g_datal, *g_carryl;
 cufftHandle plan;
+cudaDeviceProp dev;
 
+int fft_count;
+int multipliers[250];
 int quitting, checkpoint_iter, fftlen, tfdepth=74, llsaved=2, s_f, t_f, r_f, d_f, k_f;
 int unused_mem = 100;
 int polite, polite_f;
@@ -1397,18 +1397,53 @@ void close_lucas (int *x_int)
  *       End LL/GPU Functions, Begin Utility/CPU Functions                *
  *                                                                        *
  **************************************************************************/
-
-int
-choose_fft_length (int q, int* index)
+void init_threads(int n)
 {
-/* In order to increase length if an exponent has a round off issue, we use an
-extra paramter that we can adjust on the fly. In check(), index starts as -1,
-the default. In that case, choose from the table. If index >= 0, we must assume
-it's an override index and return the corresponding length. If index > table-count,
-then we assume it's a manual fftlen and return the proper index. */
-///*
+  FILE *threads;
+  char buf[132];
+  char threadfile[32];
+  int no_file = 0, no_entry = 1;
+  int th1 = 0, th2 = 0, th3 = 0;
+  int temp_n;
+
+  sprintf (threadfile, "%s threads.txt", dev.name);
+  threads = fopen(threadfile, "r");
+  if(threads)
+  {
+    while(fgets(buf, 132, threads) != NULL)
+    {
+      sscanf(buf, "%d %d %d %d", &temp_n, &th1, &th2, &th3);
+      if(n == temp_n * 1024)
+      {
+        threads1 = th1;
+        threads2 = th2;
+        threads3 = th3;
+        no_entry = 0;
+      }
+    }
+  }
+  else no_file = 1;
+  if(no_file || no_entry)
+  {
+    if(no_file) printf("No %s file found. Using default thead sizes.\n", threadfile);
+    else if(no_entry) printf("No entry for fft = %dk found. Using default thead sizes.\n", n / 1024);
+    printf("For optimal fft selection, please run\n");
+    printf("./CUDALucas -cufftbench %d %d r\n", n / 1024, n / 1024);
+    printf("for some small r, 0 < r < 6 e.g.\n");
+    fflush(NULL);
+  }
+  return;
+}
+
+int init_ffts()
+{
+  //#define COUNT 139
+  FILE *fft;
+  char buf[132];
+  int next_fft, j = 0, i = 0;
+  int first_found = 0;
   #define COUNT 160
-  int multipliers[COUNT] = {  //this batch from GTX570 timings
+  int default_mult[COUNT] = {  //this batch from GTX570 timings
                                 2,     8,    10,    14,    16,    18,    20,    32,    36,    42,
                                48,    50,    56,    60,    64,    70,    80,    84,    96,   112,
                               120,   126,   128,   144,   160,   162,   168,   180,   192,   224,
@@ -1425,53 +1460,95 @@ then we assume it's a manual fftlen and return the proper index. */
                             32000, 32400, 32768, 33614, 34992, 36000, 36288, 38416, 39200, 39366,
                             40500, 41472, 42336, 43200, 43904, 47628, 49000, 50000, 50176, 51200,
                             52488, 54432, 55296, 56000, 57344, 60750, 62500, 64000, 64800, 65536 };
-//*/
-/*
-  #define COUNT 142
-  int multipliers[COUNT] = {  // this batch from titan timings
-                                2,     4,     8,    14,    20,    28,    36,    56,    72,    80,
-                               98,   100,   108,   112,   128,   140,   144,   162,   168,   200,
-                              216,   224,   256,   280,   324,   392,   400,   432,   512,   540,
-                              576,   648,   686,   784,   800,   864,  1000,  1024,  1080,  1296,
-                             1372,  1568,  1600,  1728,  1944,  2000,  2048,  2592,  2744,  3136,
-                             3200,  3240,  3888,  4000,  4096,  4374,  4500,  5184,  5488,  5600,
-                             5832,  6048,  6250,  6272,  6400,  6480,  7776,  8000,  8192,  8748,
-                             9072,  9216,  9604,  9800, 10000, 10976, 11200, 11664, 12000, 12150,
-                            12250, 12500, 12544, 12800, 12960, 13122, 13608, 15552, 15876, 16000,
-                            16200, 16384, 17496, 18144, 19208, 19600, 20000, 20250, 21952, 23328,
-                            23814, 24300, 24500, 25088, 25600, 26244, 27000, 27216, 28000, 28672,
-                            31104, 31250, 32000, 32400, 32768, 33614, 34992, 36000, 36288, 38416,
-                            39200, 39366, 40500, 41472, 42336, 43200, 43904, 47628, 49000, 50000,
-                            50176, 51200, 52488, 54432, 55296, 56000, 57344, 60750, 62500, 64000,
-                            64800, 65536 };
-*/
-  // Support up to 64M, the maximum length with threads == 1024
 
-   if( 0 < *index && *index < COUNT ) // override
+  char fftfile[32];
+
+  sprintf (fftfile, "%s fft.txt", dev.name);
+  fft = fopen(fftfile, "r");
+  if(!fft)
+  {
+    printf("No %s file found. Using default fft lengths.\n", fftfile);
+    printf("For optimal fft selection, please run\n");
+    printf("./CUDALucas -cufftbench 2 8192 r\n");
+    printf("for some small r, 0 < r < 6 e.g.\n");
+    fflush(NULL);
+    for(j = 0; j < COUNT; j++) multipliers[j] = default_mult[j];
+  }
+  else
+  {
+    while(fgets(buf, 132, fft) != NULL)
+    {
+      int le = 0;
+
+      sscanf(buf, "%d", &le);
+      if(next_fft = atoi(buf))
+      {
+        if(!first_found)
+        {
+          while(i < COUNT && default_mult[i] < next_fft)
+          {
+            multipliers[j] = default_mult[i];
+            i++;
+            j++;
+          }
+          multipliers[j] = next_fft;
+          j++;
+          first_found = 1;
+        }
+        else
+        {
+          multipliers[j] = next_fft;
+          j++;
+        }
+      }
+    }
+    while(default_mult[i] < multipliers[j - 1] && i < COUNT) i++;
+    while(i < COUNT)
+    {
+      multipliers[j] = default_mult[i];
+      j++;
+      i++;
+    }
+    fclose(fft);
+  }
+  return j;
+}
+
+int
+choose_fft_length (int q, int* index)
+{
+/* In order to increase length if an exponent has a round off issue, we use an
+extra paramter that we can adjust on the fly. In check(), index starts as -1,
+the default. In that case, choose from the table. If index >= 0, we must assume
+it's an override index and return the corresponding length. If index > table-count,
+then we assume it's a manual fftlen and return the proper index. */
+
+  if( 0 < *index && *index < fft_count ) // override
     return 1024*multipliers[*index];
-  else if( *index >= COUNT || q == 0)
+  else if( *index >= fft_count || q == 0)
   { /* override with manual fftlen passed as arg; set pointer to largest index <= fftlen */
     int len, i;
-    for(i = COUNT - 1; i >= 0; i--)
+    for(i = fft_count - 1; i >= 0; i--)
     {
       len = 1024*multipliers[i];
       if( len <= *index )
       {
         *index = i;
-        return len; /* not really necessary, but now we could decide to override ftlen with this value here */
+        return len; /* not really necessary, but now we could decide to override fftlen with this value */
       }
     }
   }
   else
   { // *index < 0, not override, choose length and set pointer to proper index
-    int len, i, estimate = q / 18; // reduce to 18, perhaps even 17??
-    for(i = 0; i < COUNT; i++)
+    int i;
+    int estimate = floor(0.00003725 * exp (1.019515 * log ((double) q)));
+
+    for(i = 0; i < fft_count; i++)
     {
-      len = 1024*multipliers[i];
-      if( len >= estimate )
+      if(multipliers[i] >= estimate)
       {
         *index = i;
-        return len;
+        return  multipliers[i] * 1024;
       }
     }
   }
@@ -1526,45 +1603,45 @@ void
 init_device (int device_number)
 {
   int device_count = 0;
+
   cudaGetDeviceCount (&device_count);
   if (device_number >= device_count)
-    {
-      printf ("device_number >=  device_count ... exiting\n");
-      printf ("(This is probably a driver problem)\n\n");
-      exit (2);
-    }
-  if (d_f)
-    {
-      cudaDeviceProp dev;
-      cudaGetDeviceProperties (&dev, device_number);
-      printf ("------- DEVICE %d -------\n", device_number);
-      printf ("name                %s\n", dev.name);
-      printf ("Compatibility       %d.%d\n", dev.major, dev.minor);
-      printf ("clockRate (MHz)     %d\n", dev.clockRate/1000);
-      printf ("memClockRate (MHz)  %d\n", dev.memoryClockRate/1000);
-      printf ("totalGlobalMem      %d\n", (int) dev.totalGlobalMem);
-      printf ("totalConstMem       %d\n", (int) dev.totalConstMem);
-      printf ("l2CacheSize         %d\n", (int) dev.l2CacheSize);
-      printf ("sharedMemPerBlock   %d\n", (int) dev.sharedMemPerBlock);
-      printf ("regsPerBlock        %d\n", (int) dev.regsPerBlock);
-      printf ("warpSize            %d\n", (int) dev.warpSize);
-      printf ("memPitch            %d\n", (int) dev.memPitch);
-      printf ("maxThreadsPerBlock  %d\n", (int) dev.maxThreadsPerBlock);
-      printf ("maxThreadsPerMP     %d\n", dev.maxThreadsPerMultiProcessor);
-      printf ("multiProcessorCount %d\n", dev.multiProcessorCount);
-      printf ("maxThreadsDim[3]    %d,%d,%d\n", dev.maxThreadsDim[0], dev.maxThreadsDim[1], dev.maxThreadsDim[2]);
-      printf ("maxGridSize[3]      %d,%d,%d\n", dev.maxGridSize[0], dev.maxGridSize[1], dev.maxGridSize[2]);
-      printf ("textureAlignment    %d\n", (int) dev.textureAlignment);
-      printf ("deviceOverlap       %d\n\n", dev.deviceOverlap);
-      // From Iain
-      if (dev.major == 1 && dev.minor < 3)
-      {
-        printf("A GPU with compute capability >= 1.3 is required for double precision arithmetic\n\n");
-        exit (2);
-      }
-    }
+  {
+    printf ("device_number >=  device_count ... exiting\n");
+    printf ("(This is probably a driver problem)\n\n");
+    exit (2);
+  }
+  cudaGetDeviceProperties (&dev, device_number);
+  // From Iain
+  if (dev.major == 1 && dev.minor < 3)
+  {
+    printf("A GPU with compute capability >= 1.3 is required for double precision arithmetic\n\n");
+    exit (2);
+  }
   cudaSetDeviceFlags (cudaDeviceBlockingSync);
   cudaSetDevice (device_number);
+  if (d_f)
+    {
+      printf ("------- DEVICE %d -------\n",    device_number);
+      printf ("name                %s\n",       dev.name);
+      printf ("Compatibility       %d.%d\n",    dev.major, dev.minor);
+      printf ("clockRate (MHz)     %d\n",       dev.clockRate/1000);
+      printf ("memClockRate (MHz)  %d\n",       dev.memoryClockRate/1000);
+      printf ("totalGlobalMem      %zu\n",      dev.totalGlobalMem);
+      printf ("totalConstMem       %zu\n",      dev.totalConstMem);
+      printf ("l2CacheSize         %d\n",       dev.l2CacheSize);
+      printf ("sharedMemPerBlock   %zu\n",      dev.sharedMemPerBlock);
+      printf ("regsPerBlock        %d\n",       dev.regsPerBlock);
+      printf ("warpSize            %d\n",       dev.warpSize);
+      printf ("memPitch            %zu\n",      dev.memPitch);
+      printf ("maxThreadsPerBlock  %d\n",       dev.maxThreadsPerBlock);
+      printf ("maxThreadsPerMP     %d\n",       dev.maxThreadsPerMultiProcessor);
+      printf ("multiProcessorCount %d\n",       dev.multiProcessorCount);
+      printf ("maxThreadsDim[3]    %d,%d,%d\n", dev.maxThreadsDim[0], dev.maxThreadsDim[1], dev.maxThreadsDim[2]);
+      printf ("maxGridSize[3]      %d,%d,%d\n", dev.maxGridSize[0], dev.maxGridSize[1], dev.maxGridSize[2]);
+      printf ("textureAlignment    %zu\n",      dev.textureAlignment);
+      printf ("deviceOverlap       %d\n\n",     dev.deviceOverlap);
+    }
 }
 
 
@@ -1738,9 +1815,7 @@ int read_st2_checkpoint (int q, unsigned *x_packed)
   fPtr = fopen (chkpnt_cfn, "rb");
   if (!fPtr)
   {
-#ifndef _MSC_VER
     if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the checkpoint file. Trying the backup file.\n");
-#endif
   }
   else if (fread (x_packed, 1, sizeof (unsigned) * (end + 25) , fPtr) != (sizeof (unsigned) * (end + 25)))
   {
@@ -1760,9 +1835,7 @@ int read_st2_checkpoint (int q, unsigned *x_packed)
   fPtr = fopen(chkpnt_tfn, "rb");
   if (!fPtr)
   {
-#ifndef _MSC_VER
     if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the backup file. Restarting test.\n");
-#endif
   }
   else if (fread (x_packed, 1, sizeof (unsigned) * (end + 25) , fPtr) != (sizeof (unsigned) * (end + 25)))
   {
@@ -1818,6 +1891,7 @@ void set_checkpoint_data(unsigned *x_packed, int q, int n, int j, int stage, int
 void
 write_checkpoint_packed (unsigned *x_packed, int q)
 {
+  int end = (q + 31) / 32;
   FILE *fPtr;
   char chkpnt_cfn[32];
   char chkpnt_tfn[32];
@@ -1832,13 +1906,27 @@ write_checkpoint_packed (unsigned *x_packed, int q)
     fprintf(stderr, "Couldn't write checkpoint.\n");
     return;
   }
-  fwrite (x_packed, 1, sizeof (unsigned) * (((q + 31) / 32) + 25), fPtr);
+  fwrite (x_packed, 1, sizeof (unsigned) * (end + 25), fPtr);
   fclose (fPtr);
+ if (s_f > 0)			// save all checkpoint files
+    {
+      char chkpnt_sfn[64];
+#ifndef _MSC_VER
+      sprintf (chkpnt_sfn, "%s/s" "%d.%d.%s", folder, q, x_packed[end + 2], s_residue);
+#else
+      sprintf (chkpnt_sfn, "%s\\s" "%d.%d.%s.txt", folder, q, x_packed[end + 2], s_residue);
+#endif
+      fPtr = fopen (chkpnt_sfn, "wb");
+      if (!fPtr) return;
+      fwrite (x_packed, 1, sizeof (unsigned) * (end + 25), fPtr);
+      fclose (fPtr);
+    }
 }
 
 void
 write_st2_checkpoint (unsigned *x_packed, int q)
 {
+  int end = (q + 31) / 32;
   FILE *fPtr;
   char chkpnt_cfn[32];
   char chkpnt_tfn[32];
@@ -1853,8 +1941,21 @@ write_st2_checkpoint (unsigned *x_packed, int q)
     fprintf(stderr, "Couldn't write checkpoint.\n");
     return;
   }
-  fwrite (x_packed, 1, sizeof (unsigned) * (((q + 31) / 32) + 25), fPtr);
+  fwrite (x_packed, 1, sizeof (unsigned) * (end + 25), fPtr);
   fclose (fPtr);
+ if (s_f > 0)			// save all checkpoint files
+    {
+      char chkpnt_sfn[64];
+#ifndef _MSC_VER
+      sprintf (chkpnt_sfn, "%s/s" "%d.%d.%s", folder, q, x_packed[end + 2], s_residue);
+#else
+      sprintf (chkpnt_sfn, "%s\\s" "%d.%d.%s.txt", folder, q, x_packed[end + 2], s_residue);
+#endif
+      fPtr = fopen (chkpnt_sfn, "wb");
+      if (!fPtr) return;
+      fwrite (x_packed, 1, sizeof (unsigned) * (end + 25), fPtr);
+      fclose (fPtr);
+    }
 }
 
 int printbits_int (int *x_int, int q, int n, int offset, FILE* fp, char *expectedResidue, int o_f)
@@ -1936,18 +2037,25 @@ int* init_lucas_packed_int(unsigned * x_packed, int q , int *n, int *j, int *sta
   old_n = fftlen;
   if(fftlen == 0) fftlen = *n;
   new_n = choose_fft_length(q, &fftlen);
-  if(old_n > COUNT) *n = old_n;
+  if(old_n > fft_count) *n = old_n;
   else if (new_test || old_n) *n = new_n;
-
-  if ((*n / threads1) > 65535)
+  init_threads(*n);
+  printf("Using threads: norm1 %d, mult %d, norm2 %d.\n", threads1, threads2, threads3);
+  if ((*n / (2 * threads1)) > dev.maxGridSize[0])
   {
     fprintf (stderr, "over specifications Grid = %d\n", (int) *n / threads1);
-    fprintf (stderr, "try increasing threads (%d) or decreasing FFT length (%dK)\n\n",  threads1, *n / 1024);
+    fprintf (stderr, "try increasing norm1 threads (%d) or decreasing FFT length (%dK)\n\n",  threads1, *n / 1024);
     return NULL;
   }
-  if (q < *n)
+  if ((*n / (4 * threads2)) > dev.maxGridSize[0])
   {
-    fprintf (stderr, "The prime %d is less than the fft length %d. This will cause problems.\n\n", q, *n / 1024);
+    fprintf (stderr, "over specifications Grid = %d\n", (int) *n / threads1);
+    fprintf (stderr, "try increasing mult threads (%d) or decreasing FFT length (%dK)\n\n",  threads2, *n / 1024);
+    return NULL;
+  }
+  if (q  < *n * 0.8 * log((double) *n))
+  {
+    fprintf (stderr, "The fft length %dK is too large for the exponent %d. Restart with smaller fft.\n", *n / 1024, q);
     return NULL;
   }
   x = (int *) malloc (sizeof (int) * *n);
@@ -1963,46 +2071,281 @@ int* init_lucas_packed_int(unsigned * x_packed, int q , int *n, int *j, int *sta
   return x;
 }
 
-void
-cufftbench (int cufftbench_s, int cufftbench_e, int cufftbench_d)
-{
-  cudaEvent_t start, stop;
-  double *x;
-  float outerTime;
-  int i, j;
-  printf ("CUFFT bench start = %d end = %d distance = %d\n", cufftbench_s,
-	  cufftbench_e, cufftbench_d);
+int isReasonable(int fft)
+{ //From an idea of AXN's mentioned on the forums
+  int i;
 
-  cutilSafeCall (cudaMalloc ((void **) &g_x, sizeof (double) * cufftbench_e));
-  x = ((double *) malloc (sizeof (double) * cufftbench_e + 1));
-  for (i = 0; i <= cufftbench_e; i++)
-    x[i] = 0;
-  cutilSafeCall (cudaMemcpy
-		 (g_x, x, sizeof (double) * cufftbench_e,
-		  cudaMemcpyHostToDevice));
+  while(!(fft & 1)) fft /= 2;
+  for(i = 3; i <= 7; i += 2) while((fft % i) == 0) fft /= i;
+  return (fft);
+}
+
+
+void threadbench (int n, int passes, int device_number)
+{
+  float total[216] = {0.0f}, outerTime, maxerr = 0.5f;
+  int threads[] = {32, 64, 128, 256, 512, 1024};
+  int t1, t2, t3, i;
+  float best_time = 10000.0f;
+  int best_t1 = 0, best_t2 = 0, best_t3 = 0;
+  int pass;
+  cudaEvent_t start, stop;
+
+  printf("CUDA bench, testing various thread sizes for fft %dK, doing %d passes.\n", n, passes);
+  fflush(NULL);
+  n *= 1024;
+
+  cutilSafeCall (cudaMalloc ((void **) &g_x, sizeof (double) * n));
+  cutilSafeCall (cudaMemset (g_x, 0, sizeof (double) * n));
+  cutilSafeCall (cudaMalloc ((void **) &g_ttmp, sizeof (double) * n));
+  cutilSafeCall (cudaMemset (g_ttmp, 0, sizeof (double) * n));
+  cutilSafeCall (cudaMalloc ((void **) &g_ct, sizeof (double) * n / 4));
+  cutilSafeCall (cudaMemset (g_ct, 0, sizeof (double) * n / 4));
+  cutilSafeCall (cudaMalloc ((void **) &g_ttp1, sizeof (double) * n / 32));
+  cutilSafeCall (cudaMalloc ((void **) &g_datai, sizeof (int) * n / 32));
+  cutilSafeCall (cudaMalloc ((void **) &g_carryi, sizeof (int) * n / 64));
+  cutilSafeCall (cudaMalloc ((void **) &g_err, sizeof (float)));
+  cutilSafeCall (cudaMemset (g_err, 0, sizeof (float)));
+
   cutilSafeCall (cudaEventCreate (&start));
-  cutilSafeCall (cudaEventCreate (&stop));
-  for (j = cufftbench_s*1024; j <= cufftbench_s*1024; j += 1/*cufftbench_d*/)
+  cutilSafeCall (cudaEventCreateWithFlags (&stop, cudaEventBlockingSync));
+  cufftSafeCall (cufftPlan1d (&plan, n / 2, CUFFT_Z2Z, 1));
+
+  for(t1 = 0; t1 < 6; t1++)
+  {
+    if(n / (2 * threads[t1]) <= dev.maxGridSize[0] && n % (2 * threads[t1]) == 0)
     {
-      cufftSafeCall (cufftPlan1d (&plan, j / 2, CUFFT_Z2Z, 1));
-      cufftSafeCall (cufftExecZ2Z
-		     (plan, (cufftDoubleComplex *) g_x,
-		      (cufftDoubleComplex *) g_x, CUFFT_INVERSE));
-      cutilSafeCall (cudaEventRecord (start, 0));
-      for (i = 0; i < 1000; i++)
-	cufftSafeCall (cufftExecZ2Z
-		       (plan, (cufftDoubleComplex *) g_x,
-			(cufftDoubleComplex *) g_x, CUFFT_INVERSE));
-      cutilSafeCall (cudaEventRecord (stop, 0));
-      cutilSafeCall (cudaEventSynchronize (stop));
-      cutilSafeCall (cudaEventElapsedTime (&outerTime, start, stop));
-      printf ("CUFFT_Z2Z size= %d time= %f msec\n", j, outerTime / 1000);
-      cufftSafeCall (cufftDestroy (plan));
+      for (t2 = 0; t2 < 6; t2++)
+      {
+        if(n / (4 * threads[t2]) <= dev.maxGridSize[0] && n % (4 * threads[t2]) == 0)
+        {
+          for (t3 = 0; t3 < 6; t3++)
+          {
+            for(pass = 1; pass <= passes; pass++)
+            {
+              cutilSafeCall (cudaEventRecord (start, 0));
+              for (i = 0; i < 50; i++)
+              {
+                cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_x, (cufftDoubleComplex *) g_x, CUFFT_INVERSE));
+                square <<< n / (4 * threads[t2]), threads[t2] >>> (n, g_x, g_ct);
+                cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_x, (cufftDoubleComplex *) g_x, CUFFT_INVERSE));
+                norm1a <<< n / (2 * threads[t1]), threads[t1] >>> (g_x, g_datai, g_xint, g_ttmp, g_carryi, g_err, maxerr, 0);
+                norm2a <<< (n / (2 * threads[t1]) + threads[t3] - 1) / threads[t3], threads[t3] >>>
+                           (g_x, g_xint, n, threads[t1], g_datai, g_carryi, g_ttp1, 0);
+              }
+              cutilSafeCall (cudaEventRecord (stop, 0));
+              cutilSafeCall (cudaEventSynchronize (stop));
+              cutilSafeCall (cudaEventElapsedTime (&outerTime, start, stop));
+              outerTime /= 50.0f;
+              total[36 * t1 + 6 * t2 + t3] += outerTime;
+              //if(outerTime > max_diff[i]) max_diff[i] = outerTime;
+            }
+            printf ("fft size = %dK, ave time = %2.4f msec, Norm1 threads %d, Mult threads %d, Norm2 threads %d\n",
+                      n / 1024 , total[36 * t1 + 6 * t2 + t3] / passes, threads[t1], threads[t2], threads[t3]);
+            fflush(NULL);
+          }
+        }
+      }
     }
+  }
+
+  for (i = 0; i < 216; i++)
+  {
+    if(total[i] < best_time && total[i] > 0.0f)
+    {
+      int j = i;
+      best_time = total[i];
+      best_t3 = j % 6;
+      j /= 6;
+      best_t2 = j % 6;
+      best_t1 = j / 6;
+    }
+  }
+  printf("\nBest time for fft = %dK, time: %2.4f, t1 = %d, t2 = %d, t3 = %d\n",
+  n/1024, best_time / passes, threads[best_t1], threads[best_t2], threads[best_t3]);
+
+  cufftSafeCall (cufftDestroy (plan));
   cutilSafeCall (cudaFree ((char *) g_x));
+  cutilSafeCall (cudaFree ((char *) g_ttmp));
+  cutilSafeCall (cudaFree ((char *) g_ttp1));
+  cutilSafeCall (cudaFree ((char *) g_ct));
+  cutilSafeCall (cudaFree ((char *) g_datai));
+  cutilSafeCall (cudaFree ((char *) g_carryi));
+  cutilSafeCall (cudaFree ((char *) g_err));
   cutilSafeCall (cudaEventDestroy (start));
   cutilSafeCall (cudaEventDestroy (stop));
-  free ((char *) x);
+
+
+  char threadfile[32];
+
+  sprintf (threadfile, "%s threads.txt", dev.name);
+  FILE *fptr;
+  fptr = fopen(threadfile, "a+");
+  if(!fptr) printf("Can't open the damn file.\n");
+  else fprintf(fptr, "%5d %4d %4d %4d %8.4f\n", n / 1024, threads[best_t1], threads[best_t2], threads[best_t3], best_time / passes);
+
+
+
+}
+
+int isprime(unsigned int n)
+{
+  unsigned int i;
+
+  if(n<=1) return 0;
+  if(n>2 && n%2==0)return 0;
+
+  i=3;
+  while(i*i <= n && i < 0x10000)
+  {
+    if(n%i==0)return 0;
+    i+=2;
+  }
+  return 1;
+}
+
+
+void cufftbench (int cufftbench_s, int cufftbench_e, int passes, int device_number)
+{
+  //if(cufftbench_s % 2) cufftbench_s++;
+
+  cudaEvent_t start, stop;
+  float outerTime;
+  int i, j, k;
+  int end = cufftbench_e - cufftbench_s + 1;
+  float best_time;
+  float *total, *max_diff, maxerr = 0.5f;
+  int threads[] = {32, 64, 128, 256, 512, 1024};
+  int t1 = 3, t2 = 2, t3 = 2;
+
+  if(end == 1)
+  {
+    threadbench(cufftbench_e, passes, device_number);
+    return;
+  }
+
+  printf ("CUDA bench, testing reasonable fft sizes %dK to %dK, doing %d passes.\n", cufftbench_s, cufftbench_e, passes);
+
+  total = (float *) malloc (sizeof (float) * end);
+  max_diff = (float *) malloc (sizeof (float) * end);
+  for(i = 0; i < end; i++)
+  {
+    total[i] = max_diff[i] = 0.0f;
+  }
+
+  cutilSafeCall (cudaMalloc ((void **) &g_x, sizeof (double) * 1024 * cufftbench_e));
+  cutilSafeCall (cudaMemset (g_x, 0, sizeof (double) * 1024 * cufftbench_e));
+  cutilSafeCall (cudaMalloc ((void **) &g_ttmp, sizeof (double) * 1024 * cufftbench_e));
+  cutilSafeCall (cudaMemset (g_ttmp, 0, sizeof (double) * 1024 * cufftbench_e));
+  cutilSafeCall (cudaMalloc ((void **) &g_ct, sizeof (double) * 256 * cufftbench_e));
+  cutilSafeCall (cudaMemset (g_ct, 0, sizeof (double) * 256 * cufftbench_e));
+  cutilSafeCall (cudaMalloc ((void **) &g_ttp1, sizeof (double) * 1024 / 32 * cufftbench_e));
+  cutilSafeCall (cudaMalloc ((void **) &g_datai, sizeof (int) * 1024 / 32 * cufftbench_e));
+  cutilSafeCall (cudaMalloc ((void **) &g_carryi, sizeof (int) * 512 / 32 * cufftbench_e));
+  cutilSafeCall (cudaMalloc ((void **) &g_err, sizeof (float)));
+  cutilSafeCall (cudaMemset (g_err, 0, sizeof (float)));
+
+  cutilSafeCall (cudaEventCreate (&start));
+  cutilSafeCall (cudaEventCreateWithFlags (&stop, cudaEventBlockingSync));
+
+  for (j = cufftbench_s; j <= cufftbench_e; j++)
+  {
+    if(isReasonable(j) < 2)
+    {
+      int n = j * 1024;
+      cufftSafeCall (cufftPlan1d (&plan, n / 2, CUFFT_Z2Z, 1));
+      for(k = 0; k < passes; k++)
+      {
+        cutilSafeCall (cudaEventRecord (start, 0));
+        for (i = 0; i < 50; i++)
+  	    {
+          cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_x, (cufftDoubleComplex *) g_x, CUFFT_INVERSE));
+          square <<< n / (4 * threads[t2]), threads[t2] >>> (n, g_x, g_ct);
+          cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) g_x, (cufftDoubleComplex *) g_x, CUFFT_INVERSE));
+          norm1a <<< n / (2 * threads[t1]), threads[t1] >>> (g_x, g_datai, g_xint, g_ttmp, g_carryi, g_err, maxerr, 0);
+          norm2a <<< (n / (2 * threads[t1]) + threads[t3] - 1) / threads[t3], threads[t3] >>> (g_x, g_xint, n, threads[t1], g_datai, g_carryi, g_ttp1, 0);
+        }
+        cutilSafeCall (cudaEventRecord (stop, 0));
+        cutilSafeCall (cudaEventSynchronize (stop));
+        cutilSafeCall (cudaEventElapsedTime (&outerTime, start, stop));
+        i = j - cufftbench_s;
+        outerTime /= 50.0f;
+        total[i] += outerTime;
+        if(outerTime > max_diff[i]) max_diff[i] = outerTime;
+      }
+      cufftSafeCall (cufftDestroy (plan));
+      printf ("fft size = %dK, ave time = %2.4f msec, max-ave = %0.5f\n",
+                  j , total[i] / passes, max_diff[i] - total[i] / passes);
+      fflush(NULL);
+    }
+  }
+  cutilSafeCall (cudaFree ((char *) g_x));
+  cutilSafeCall (cudaFree ((char *) g_ttmp));
+  cutilSafeCall (cudaFree ((char *) g_ttp1));
+  cutilSafeCall (cudaFree ((char *) g_ct));
+  cutilSafeCall (cudaFree ((char *) g_datai));
+  cutilSafeCall (cudaFree ((char *) g_carryi));
+  cutilSafeCall (cudaFree ((char *) g_err));
+  cutilSafeCall (cudaEventDestroy (start));
+  cutilSafeCall (cudaEventDestroy (stop));
+
+  i = end - 1;
+  best_time = 10000.0f;
+  while(i >= 0)
+  {
+    if(total[i] > 0.0f && total[i] < best_time) best_time = total[i];
+    else total[i] = 0.0f;
+    i--;
+  }
+  char fftfile[32];
+  FILE *fptr;
+
+  sprintf (fftfile, "%s fft.txt", dev.name);
+  fptr = fopen(fftfile, "w");
+  if(!fptr)
+  {
+    printf("Cannot open %s.\n",fftfile);
+    printf ("Device              %s\n", dev.name);
+    printf ("Compatibility       %d.%d\n", dev.major, dev.minor);
+    printf ("clockRate (MHz)     %d\n", dev.clockRate/1000);
+    printf ("memClockRate (MHz)  %d\n", dev.memoryClockRate/1000);
+    printf("\n  fft    max exp  ms/iter\n");
+    for(i = 0; i < end; i++)
+    {
+      if(total[i] > 0.0f)
+      {
+        int tl = (int) ((21966.0 * exp(0.98 * log ( (double) cufftbench_s + i))) - 1.0);
+        tl |= 1;
+        while(!isprime(tl)) tl -= 2;
+        printf("%5d %10d %8.4f\n", cufftbench_s + i, tl, total[i] / passes);
+      }
+    }
+    fflush(NULL);
+  }
+  else
+  {
+    fprintf (fptr, "Device              %s\n", dev.name);
+    fprintf (fptr, "Compatibility       %d.%d\n", dev.major, dev.minor);
+    fprintf (fptr, "clockRate (MHz)     %d\n", dev.clockRate/1000);
+    fprintf (fptr, "memClockRate (MHz)  %d\n", dev.memoryClockRate/1000);
+    fprintf(fptr, "\n  fft    max exp  ms/iter\n");
+    for(i = 0; i < end; i++)
+    {
+      if(total[i] > 0.0f)
+      {
+        int tl = (int) (21966.0 * exp(0.98 * log ( (double) cufftbench_s + i)));
+        tl |= 1;
+        while(!isprime(tl)) tl += 2;
+        fprintf(fptr, "%5d %10d %8.4f\n", cufftbench_s + i, tl, total[i] / passes);
+      }
+    }
+    fclose(fptr);
+    printf("Optimal fft lengths saved in %s. Please email a copy to james@mersenne.ca.\n", fftfile);
+    fflush(NULL);
+   }
+
+  free ((char *) total);
+  free ((char *) max_diff);
 }
 
 void
@@ -2080,7 +2423,7 @@ int round_off_test(double *x, int q, int n, int *j, int *offset, unsigned *contr
         if(terr > max_err1) max_err1 = terr;
         totalerr += terr;
         reset_err(&maxerr, 0.85);
-        if(terr >= 0.43)
+        if(terr >= 0.35)
         {
 	        printf ("Iteration = %d < 1000 && err = %5.5f >= 0.35, increasing n from %dK\n", k, terr, n/1024);
 	        fftlen++;
@@ -2093,7 +2436,7 @@ int round_off_test(double *x, int q, int n, int *j, int *offset, unsigned *contr
 	      }
 	    }
       avgerr = totalerr/1000.0;
-      if( avgerr >= 0.32)
+      if( avgerr >= 0.25)
       {
         printf("Iteration 1000, average error = %5.5f >= 0.25 (max error = %5.5f), increasing FFT length and restarting\n", avgerr, max_err);
         fftlen++;
@@ -2107,27 +2450,11 @@ int round_off_test(double *x, int q, int n, int *j, int *offset, unsigned *contr
       else
       {
         printf("Iteration 1000, average error = %5.5f < 0.25 (max error = %5.5f), continuing test.\n", avgerr, max_err1);
-        reset_err(&maxerr, 0.0);
+        reset_err(&maxerr, 0.85);
       }
       *offset = l_offset;
       *j += 1000;
       return 0;
-}
-
-int isprime(unsigned int n)
-{
-  unsigned int i;
-
-  if(n<=1) return 0;
-  if(n>2 && n%2==0)return 0;
-
-  i=3;
-  while(i*i <= n && i < 0x10000)
-  {
-    if(n%i==0)return 0;
-    i+=2;
-  }
-  return 1;
 }
 
 unsigned *get_control(int *j, int lim1, int lim2, int q)
@@ -2445,7 +2772,7 @@ void guess_pminus1_bounds (
 	} else {
 		unsigned long num_passes;
 		double	numpairings;
-		num_passes = (unsigned long) ceil (480.0 / (vals - 5));
+		num_passes = (unsigned long) ceil (480.0 / (vals - 3));
 		numpairings = (unsigned long)
 			(numprimes / 2.0 * numprimes / ((guess_B2-guess_B1) * 480.0/2310.0));
 		pass2_squarings = 2400.0 + num_passes * 90.0; /* setup costs */
@@ -2910,11 +3237,11 @@ int stage2(int *x_int, unsigned *x_packed, int q, int n, float err)
       rpt = d / 30 * 8;
       i = 2;
     }
-    else if(d >= 6)
-    {
-      rpt = d / 6 * 2;
-      i = 1;
-    }
+    //else if(d >= 6)
+   // {
+    //  rpt = d / 6 * 2;
+    //  i = 1;
+    //}
     if(b1 * sprimes[i] * 53 < b2) ks = ((((b1 * 53 + 1) >> 1) + d - 1) / d - 1) * d;
     else if(b1 * sprimes[i] < b2) ks = ((((b2 / sprimes[i] + 1) >> 1) + d - 1) / d - 1) * d;
     else ks = ((((b1 + 1) >> 1) + d - 1) / d - 1) * d;
@@ -2947,8 +3274,8 @@ int stage2(int *x_int, unsigned *x_packed, int q, int n, float err)
     }
     if(d>2310) d -= 2310;
     else if(d>210) d -= 210;
-    else if(d>30) d -= 30;
-    else if(d>=6) d -= 6;
+    else if(d>=30) d -= 30;
+    //else if(d>=6) d -= 6;
     }
     d = best_d;
     e = best_e;
@@ -3353,7 +3680,7 @@ check_pm1 (int q, char *expectedResidue)
     }
 
     g_d = g_d_commandline;
-    if(g_nrp == 0) g_nrp = ((free_mem - (size_t) unused_mem * 1024 * 1024)/ n / 8 - 7); printf("g_nrp %d\n", unused_mem * 1024 * 1024);
+    if(g_nrp == 0) g_nrp = ((free_mem - (size_t) unused_mem * 1024 * 1024)/ n / 8 - 7);
 #ifdef _MSC_VER
     if (g_nrp > (4096/sizeof(double))*1024*1024/n)
         g_nrp = (4096/sizeof(double))*1024*1024/n; // Max single allocation of 4 GB on Windows?
@@ -3632,9 +3959,10 @@ int main (int argc, char *argv[])
 
 
   init_device (device_number);
+  fft_count = init_ffts();
 
    if (cufftbench_d)
-    cufftbench (cufftbench_s, cufftbench_e, cufftbench_d);
+    cufftbench (cufftbench_s, cufftbench_e, cufftbench_d, device_number);
   else
     {
       if (s_f)
