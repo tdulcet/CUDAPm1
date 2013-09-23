@@ -22,7 +22,7 @@ char program[] = "CUDAPm1 v0.20";
 #include <sys/stat.h>
 
 #ifdef _MSC_VER
-#define stat _stat
+//#define stat _stat
 #define strncasecmp strnicmp // _strnicmp
 #include <direct.h>
 #endif
@@ -166,7 +166,7 @@ __global__ void square1 (int n,
   if (j2)
     {
       int nminusj = n - j;
-	  wkr = 0.5 - ct[nc - j2];
+	    wkr = 0.5 - ct[nc - j2];
       wki = ct[j2];
       ajr = a[j];
       aji = a[1 + j];
@@ -1425,9 +1425,9 @@ void init_threads(int n)
   else no_file = 1;
   if(no_file || no_entry)
   {
-    if(no_file) printf("No %s file found. Using default thead sizes.\n", threadfile);
-    else if(no_entry) printf("No entry for fft = %dk found. Using default thead sizes.\n", n / 1024);
-    printf("For optimal fft selection, please run\n");
+    if(no_file) printf("No %s file found. Using default thread sizes.\n", threadfile);
+    else if(no_entry) printf("No entry for fft = %dk found. Using default thread sizes.\n", n / 1024);
+    printf("For optimal thread selection, please run\n");
     printf("./CUDALucas -cufftbench %d %d r\n", n / 1024, n / 1024);
     printf("for some small r, 0 < r < 6 e.g.\n");
     fflush(NULL);
@@ -1469,7 +1469,7 @@ int init_ffts()
   {
     printf("No %s file found. Using default fft lengths.\n", fftfile);
     printf("For optimal fft selection, please run\n");
-    printf("./CUDALucas -cufftbench 2 8192 r\n");
+    printf("./CUDALucas -cufftbench 1 8192 r\n");
     printf("for some small r, 0 < r < 6 e.g.\n");
     fflush(NULL);
     for(j = 0; j < COUNT; j++) multipliers[j] = default_mult[j];
@@ -1515,7 +1515,7 @@ int init_ffts()
 }
 
 int
-choose_fft_length (int q, int* index)
+choose_fft_length (int q, int *index)
 {
 /* In order to increase length if an exponent has a round off issue, we use an
 extra paramter that we can adjust on the fly. In check(), index starts as -1,
@@ -1523,8 +1523,7 @@ the default. In that case, choose from the table. If index >= 0, we must assume
 it's an override index and return the corresponding length. If index > table-count,
 then we assume it's a manual fftlen and return the proper index. */
 
-  if( 0 < *index && *index < fft_count ) // override
-    return 1024*multipliers[*index];
+  if( 0 < *index && *index < fft_count ) return 1024*multipliers[*index];
   else if( *index >= fft_count || q == 0)
   { /* override with manual fftlen passed as arg; set pointer to largest index <= fftlen */
     int len, i;
@@ -1541,13 +1540,14 @@ then we assume it's a manual fftlen and return the proper index. */
   else
   { // *index < 0, not override, choose length and set pointer to proper index
     int i;
-    int estimate = floor(0.00003725 * exp (1.019515 * log ((double) q)));
+    int estimate = ceil(1.01 * 0.0000358738168878758 * exp (1.0219834608 * log ((double) q)));
 
     for(i = 0; i < fft_count; i++)
     {
       if(multipliers[i] >= estimate)
       {
         *index = i;
+        printf("Index %d\n",*index);
         return  multipliers[i] * 1024;
       }
     }
@@ -1733,7 +1733,7 @@ void balance_digits_int(int* x, int q, int n)
 unsigned *
 read_checkpoint_packed (int q)
 {
-  struct stat FileAttrib;
+  //struct stat FileAttrib;
   FILE *fPtr;
   unsigned *x_packed;
   char chkpnt_cfn[32];
@@ -1747,9 +1747,9 @@ read_checkpoint_packed (int q)
   fPtr = fopen (chkpnt_cfn, "rb");
   if (!fPtr)
   {
-#ifndef _MSC_VER
-    if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the checkpoint file. Trying the backup file.\n");
-#endif
+//#ifndef _MSC_VER
+    //if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the checkpoint file. Trying the backup file.\n");
+//#endif
   }
   else if (fread (x_packed, 1, sizeof (unsigned) * (end + 25) , fPtr) != (sizeof (unsigned) * (end + 25)))
   {
@@ -1769,9 +1769,9 @@ read_checkpoint_packed (int q)
   fPtr = fopen(chkpnt_tfn, "rb");
   if (!fPtr)
   {
-#ifndef _MSC_VER
-    if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the backup file. Restarting test.\n");
-#endif
+//#ifndef _MSC_VER
+//    if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the backup file. Restarting test.\n");
+//#endif
   }
   else if (fread (x_packed, 1, sizeof (unsigned) * (end + 25) , fPtr) != (sizeof (unsigned) * (end + 25)))
   {
@@ -1804,7 +1804,7 @@ read_checkpoint_packed (int q)
 
 int read_st2_checkpoint (int q, unsigned *x_packed)
 {
-  struct stat FileAttrib;
+  //struct stat FileAttrib;
   FILE *fPtr;
   char chkpnt_cfn[32];
   char chkpnt_tfn[32];
@@ -1815,7 +1815,7 @@ int read_st2_checkpoint (int q, unsigned *x_packed)
   fPtr = fopen (chkpnt_cfn, "rb");
   if (!fPtr)
   {
-    if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the checkpoint file. Trying the backup file.\n");
+   // if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the checkpoint file. Trying the backup file.\n");
   }
   else if (fread (x_packed, 1, sizeof (unsigned) * (end + 25) , fPtr) != (sizeof (unsigned) * (end + 25)))
   {
@@ -1835,7 +1835,7 @@ int read_st2_checkpoint (int q, unsigned *x_packed)
   fPtr = fopen(chkpnt_tfn, "rb");
   if (!fPtr)
   {
-    if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the backup file. Restarting test.\n");
+    //if(stat(chkpnt_cfn, &FileAttrib) == 0) fprintf (stderr, "\nUnable to open the backup file. Restarting test.\n");
   }
   else if (fread (x_packed, 1, sizeof (unsigned) * (end + 25) , fPtr) != (sizeof (unsigned) * (end + 25)))
   {
@@ -2043,15 +2043,25 @@ int* init_lucas_packed_int(unsigned * x_packed, int q , int *n, int *j, int *sta
   printf("Using threads: norm1 %d, mult %d, norm2 %d.\n", threads1, threads2, threads3);
   if ((*n / (2 * threads1)) > dev.maxGridSize[0])
   {
-    fprintf (stderr, "over specifications Grid = %d\n", (int) *n / threads1);
+    fprintf (stderr, "over specifications Grid = %d\n", (int) *n / (2 * threads1));
     fprintf (stderr, "try increasing norm1 threads (%d) or decreasing FFT length (%dK)\n\n",  threads1, *n / 1024);
     return NULL;
   }
   if ((*n / (4 * threads2)) > dev.maxGridSize[0])
   {
-    fprintf (stderr, "over specifications Grid = %d\n", (int) *n / threads1);
+    fprintf (stderr, "over specifications Grid = %d\n", (int) *n / (4 * threads2));
     fprintf (stderr, "try increasing mult threads (%d) or decreasing FFT length (%dK)\n\n",  threads2, *n / 1024);
     return NULL;
+  }
+  if ((*n % (2 * threads1))  != 0)
+  {
+    fprintf (stderr, "fft length %d must be divisible by 2 * norm1 threads %d\n", *n, threads1);
+     return NULL;
+  }
+  if ((*n % (4 * threads2))  != 0)
+  {
+    fprintf (stderr, "fft length %d must be divisible by 4 * mult threads %d\n", *n, threads2);
+     return NULL;
   }
   if (q  < *n * 0.8 * log((double) *n))
   {
@@ -2314,8 +2324,8 @@ void cufftbench (int cufftbench_s, int cufftbench_e, int passes, int device_numb
     {
       if(total[i] > 0.0f)
       {
-        int tl = (int) ((21966.0 * exp(0.98 * log ( (double) cufftbench_s + i))) - 1.0);
-        tl |= 1;
+         int tl = (int) (exp(0.9784876919 * log (cufftbench_s + i)) * 22366.92473079 / 1.01);
+        if(tl % 2 == 0) tl -= 1;
         while(!isprime(tl)) tl -= 2;
         printf("%5d %10d %8.4f\n", cufftbench_s + i, tl, total[i] / passes);
       }
@@ -2333,9 +2343,9 @@ void cufftbench (int cufftbench_s, int cufftbench_e, int passes, int device_numb
     {
       if(total[i] > 0.0f)
       {
-        int tl = (int) (21966.0 * exp(0.98 * log ( (double) cufftbench_s + i)));
-        tl |= 1;
-        while(!isprime(tl)) tl += 2;
+        int tl = (int) (exp(0.9784876919 * log (cufftbench_s + i)) * 22366.92473079 / 1.01);
+        if(tl % 2 == 0) tl -= 1;
+        while(!isprime(tl)) tl -= 2;
         fprintf(fptr, "%5d %10d %8.4f\n", cufftbench_s + i, tl, total[i] / passes);
       }
     }
@@ -2404,28 +2414,27 @@ int get_bit(int location, unsigned *control)
   return(bit);
 }
 
-int round_off_test(double *x, int q, int n, int *j, int *offset, unsigned *control, int last)
+int round_off_test(int q, int n, int *j, unsigned *control, int last)
 {
   int k;
   float totalerr = 0.0;
   float terr, avgerr, maxerr = 0.0;
   float max_err = 0.0, max_err1 = 0.0;
-  int l_offset = *offset;
   int bit;
 
       printf("Running careful round off test for 1000 iterations. If average error >= 0.25, the test will restart with a longer FFT.\n");
       for (k = 0; k < 1000 && k < last; k++)
 	    {
         bit = get_bit(last - k - 1, control);
-        terr = lucas_square (/*x,*/ q, n, k, last, &maxerr, 1, bit, 1, 0);
+        terr = lucas_square (q, n, k, last, &maxerr, 1, bit, 1, k == 999);
         if(terr > maxerr) maxerr = terr;
         if(terr > max_err) max_err = terr;
         if(terr > max_err1) max_err1 = terr;
         totalerr += terr;
         reset_err(&maxerr, 0.85);
-        if(terr >= 0.35)
+        if(terr >= 0.40)
         {
-	        printf ("Iteration = %d < 1000 && err = %5.5f >= 0.35, increasing n from %dK\n", k, terr, n/1024);
+	        printf ("Iteration = %d < 1000 && err = %5.5f >= 0.40, increasing n from %dK\n", k, terr, n/1024);
 	        fftlen++;
 	        return 1;
         }
@@ -2436,9 +2445,9 @@ int round_off_test(double *x, int q, int n, int *j, int *offset, unsigned *contr
 	      }
 	    }
       avgerr = totalerr/1000.0;
-      if( avgerr >= 0.25)
+      if( avgerr >= 0.40)
       {
-        printf("Iteration 1000, average error = %5.5f >= 0.25 (max error = %5.5f), increasing FFT length and restarting\n", avgerr, max_err);
+        printf("Iteration 1000, average error = %5.5f >= 0.40 (max error = %5.5f), increasing FFT length and restarting\n", avgerr, max_err);
         fftlen++;
         return 1;
       }
@@ -2452,7 +2461,6 @@ int round_off_test(double *x, int q, int n, int *j, int *offset, unsigned *contr
         printf("Iteration 1000, average error = %5.5f < 0.25 (max error = %5.5f), continuing test.\n", avgerr, max_err1);
         reset_err(&maxerr, 0.85);
       }
-      *offset = l_offset;
       *j += 1000;
       return 0;
 }
@@ -3704,7 +3712,7 @@ check_pm1 (int q, char *expectedResidue)
     if ((g_b1_commandline == 0) && (g_b2_commandline == 0))
       printf("Selected B1=%d, B2=%d, %0.3g%% chance of finding a factor\n",b1,g_b2,successrate*100);
 
-    if(x_packed[(q + 31)/32 + 5] == 0)  x_packed[(q + 31)/32 + 5] = b1;
+    if(x_packed[(q + 31)/32 + 5] == 0 || restarting)  x_packed[(q + 31)/32 + 5] = b1;
     else
     {
       b1 = x_packed[(q + 31)/32 + 5];
@@ -3715,7 +3723,11 @@ check_pm1 (int q, char *expectedResidue)
     if (g_b2 > 1000000000) printf("WARNING:  Expected failure with B2 > 1000000000!\n"); //max B2 supported?
     fflush(stdout);
 
-    if(stage == 1) control = get_control(&last, b1, 0, q);
+    if(stage == 1)
+    {
+      if(control) free(control);
+      control = get_control(&last, b1, 0, q);
+    }
     gettimeofday (&time0, NULL);
     start_time = time0.tv_sec;
 
@@ -3724,6 +3736,8 @@ check_pm1 (int q, char *expectedResidue)
     {
       printf ("Starting stage 1 P-1, M%d, B1 = %d, B2 = %d, fft length = %dK\n", q, b1, g_b2, n/1024);
       printf ("Doing %d iterations\n", last);
+      //restarting = round_off_test(q, n, &j, control, last);
+      //if(restarting) stage = 0;
     }
     else
     {
@@ -4014,8 +4028,13 @@ int main (int argc, char *argv[])
     else // Exponent passed in as argument
       {
 	      if (!valid_assignment(q, fftlen)) {printf("\n");} //! v_a prints warning
-	      else {
-              check_pm1 (q, 0);
+	      else { //int trft = 0;
+              //while(!trft)
+              {
+                check_pm1 (q, 0);
+                //q += 2;
+                //while(!isprime(q)) q += 2;
+              }
         }
       }
   } // end if(-r) else if(-cufft) else(workfile)
@@ -4272,12 +4291,17 @@ while (argc > 1)
 	  int derp = atoi (argv[1]);
 	  if (derp == 0) {
 	    sprintf (input_filename, "%s", argv[1]);
-	  } else { *q = derp; }
+	  }
+    else {
+      *q = derp;
+      *q |= 1;
+      while(!isprime(*q)) *q += 2;
+      }
 	  argv++;
 	  argc--;
 	}
     }
-    if (g_d_commandline%6 != 0) {
+    if (g_d_commandline%30 != 0) {
 	printf("-d2 must be a multiple of 30, 210, or 2310.\n");
 	exit(3);
     }

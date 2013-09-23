@@ -182,9 +182,9 @@ returns 1 if the assignment is within the supported bounds of CUDALucas,
   int ret = 1;
 
 	// Perhaps add a largest exponent?
-	if(exp < 20000)       {ret = 0; fprintf(stderr, "Warning: exponents < 20000 are not supported!\n");}
+	if(exp < 8000)       {ret = 0; fprintf(stderr, "Warning: exponents < 8000 are not supported!\n");}
 	if(!isprime(exp))     {ret = 0; fprintf(stderr, "Warning: exponent is not prime!\n");}
-	if(fftlen % (2048))   {ret = 0; fprintf(stderr, "Warning: FFT length %d is invalid, it must be a multiple of 2048. See CUDALucas.ini for more details about good lengths.\n", fftlen);}
+	if(fftlen % (1024))   {ret = 0; fprintf(stderr, "Warning: FFT length %d is invalid, it must be a multiple of 1024. See CUDALucas.ini for more details about good lengths.\n", fftlen);}
 	// This doesn't guarantee that it *is* valid, but it will catch horribly bad lengths.
 	// (To do more checking, we'd need access the "threads" variable from CUDALucas.cu.)
 

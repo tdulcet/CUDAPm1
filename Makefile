@@ -1,5 +1,5 @@
 NAME = CUDAPm1
-VERSION = 0.10 Alpha
+VERSION = 0.20 Alpha
 OptLevel = 3
 OUT = $(NAME)
 CUDA = /usr/local/cuda
