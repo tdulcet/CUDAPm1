@@ -53,7 +53,7 @@ double *rp_data;
 int *g_xint;
 
 char *size;
-int threads1, threads2 = 256, threads3= 128;
+int threads1, threads2 = 128, threads3= 128;
 float *g_err, g_max_err = 0.0f;
 int *g_datai, *g_carryi;
 long long int *g_datal, *g_carryl;
@@ -70,6 +70,7 @@ int g_b2 = 0, g_b2_commandline = 0;
 int g_d = 0, g_d_commandline = 0;
 int g_e = 0;
 int g_nrp = 0;
+int g_eb1 = 0;
 int keep_s1 = 0;
 
 char folder[132];
@@ -740,8 +741,9 @@ norm2b (double *g_x, int *g_xint, int g_N, int threads1, long long int *g_data, 
 __global__ void
 copy_kernel (double *save, double *y)
 {
-  const int threadID = blockIdx.x * blockDim.x + threadIdx.x;
+  const int threadID = (blockIdx.x * blockDim.x + threadIdx.x) << 1;
   save[threadID] = y[threadID];
+  save[threadID + 1] = y[threadID + 1];
 }
 
 /****************************************************************************
@@ -1428,7 +1430,7 @@ void init_threads(int n)
     if(no_file) printf("No %s file found. Using default thread sizes.\n", threadfile);
     else if(no_entry) printf("No entry for fft = %dk found. Using default thread sizes.\n", n / 1024);
     printf("For optimal thread selection, please run\n");
-    printf("./CUDALucas -cufftbench %d %d r\n", n / 1024, n / 1024);
+    printf("./CUDAPm1 -cufftbench %d %d r\n", n / 1024, n / 1024);
     printf("for some small r, 0 < r < 6 e.g.\n");
     fflush(NULL);
   }
@@ -1469,7 +1471,7 @@ int init_ffts()
   {
     printf("No %s file found. Using default fft lengths.\n", fftfile);
     printf("For optimal fft selection, please run\n");
-    printf("./CUDALucas -cufftbench 1 8192 r\n");
+    printf("./CUDAPm1 -cufftbench 1 8192 r\n");
     printf("for some small r, 0 < r < 6 e.g.\n");
     fflush(NULL);
     for(j = 0; j < COUNT; j++) multipliers[j] = default_mult[j];
@@ -1611,6 +1613,8 @@ init_device (int device_number)
     printf ("(This is probably a driver problem)\n\n");
     exit (2);
   }
+  cudaSetDevice (device_number);
+  cudaSetDeviceFlags (cudaDeviceBlockingSync);
   cudaGetDeviceProperties (&dev, device_number);
   // From Iain
   if (dev.major == 1 && dev.minor < 3)
@@ -1618,8 +1622,6 @@ init_device (int device_number)
     printf("A GPU with compute capability >= 1.3 is required for double precision arithmetic\n\n");
     exit (2);
   }
-  cudaSetDeviceFlags (cudaDeviceBlockingSync);
-  cudaSetDevice (device_number);
   if (d_f)
     {
       printf ("------- DEVICE %d -------\n",    device_number);
@@ -1627,19 +1629,39 @@ init_device (int device_number)
       printf ("Compatibility       %d.%d\n",    dev.major, dev.minor);
       printf ("clockRate (MHz)     %d\n",       dev.clockRate/1000);
       printf ("memClockRate (MHz)  %d\n",       dev.memoryClockRate/1000);
+#ifdef _MSC_VER
+      printf ("totalGlobalMem      %Iu\n",      dev.totalGlobalMem);
+#else
       printf ("totalGlobalMem      %zu\n",      dev.totalGlobalMem);
+#endif
+#ifdef _MSC_VER
+      printf ("totalConstMem       %Iu\n",      dev.totalConstMem);
+#else
       printf ("totalConstMem       %zu\n",      dev.totalConstMem);
+#endif
       printf ("l2CacheSize         %d\n",       dev.l2CacheSize);
+#ifdef _MSC_VER
+      printf ("sharedMemPerBlock   %Iu\n",      dev.sharedMemPerBlock);
+#else
       printf ("sharedMemPerBlock   %zu\n",      dev.sharedMemPerBlock);
+#endif
       printf ("regsPerBlock        %d\n",       dev.regsPerBlock);
       printf ("warpSize            %d\n",       dev.warpSize);
+#ifdef _MSC_VER
+      printf ("memPitch            %Iu\n",      dev.memPitch);
+#else
       printf ("memPitch            %zu\n",      dev.memPitch);
+#endif
       printf ("maxThreadsPerBlock  %d\n",       dev.maxThreadsPerBlock);
       printf ("maxThreadsPerMP     %d\n",       dev.maxThreadsPerMultiProcessor);
       printf ("multiProcessorCount %d\n",       dev.multiProcessorCount);
       printf ("maxThreadsDim[3]    %d,%d,%d\n", dev.maxThreadsDim[0], dev.maxThreadsDim[1], dev.maxThreadsDim[2]);
       printf ("maxGridSize[3]      %d,%d,%d\n", dev.maxGridSize[0], dev.maxGridSize[1], dev.maxGridSize[2]);
+#ifdef _MSC_VER
+      printf ("textureAlignment    %Iu\n",      dev.textureAlignment);
+#else
       printf ("textureAlignment    %zu\n",      dev.textureAlignment);
+#endif
       printf ("deviceOverlap       %d\n\n",     dev.deviceOverlap);
     }
 }
@@ -2191,7 +2213,7 @@ void threadbench (int n, int passes, int device_number)
   sprintf (threadfile, "%s threads.txt", dev.name);
   FILE *fptr;
   fptr = fopen(threadfile, "a+");
-  if(!fptr) printf("Can't open the damn file.\n");
+  if(!fptr) printf("Can't open %s threads.txt\n", dev.name);
   else fprintf(fptr, "%5d %4d %4d %4d %8.4f\n", n / 1024, threads[best_t1], threads[best_t2], threads[best_t3], best_time / passes);
 
 
@@ -2260,7 +2282,7 @@ void cufftbench (int cufftbench_s, int cufftbench_e, int passes, int device_numb
 
   for (j = cufftbench_s; j <= cufftbench_e; j++)
   {
-    if(isReasonable(j) < 2)
+    if(isReasonable(j) < 15)
     {
       int n = j * 1024;
       cufftSafeCall (cufftPlan1d (&plan, n / 2, CUFFT_Z2Z, 1));
@@ -2324,7 +2346,7 @@ void cufftbench (int cufftbench_s, int cufftbench_e, int passes, int device_numb
     {
       if(total[i] > 0.0f)
       {
-         int tl = (int) (exp(0.9784876919 * log (cufftbench_s + i)) * 22366.92473079 / 1.01);
+         int tl = (int) (exp(0.9784876919 * log ((double)cufftbench_s + i)) * 22366.92473079 / 1.01);
         if(tl % 2 == 0) tl -= 1;
         while(!isprime(tl)) tl -= 2;
         printf("%5d %10d %8.4f\n", cufftbench_s + i, tl, total[i] / passes);
@@ -2343,14 +2365,14 @@ void cufftbench (int cufftbench_s, int cufftbench_e, int passes, int device_numb
     {
       if(total[i] > 0.0f)
       {
-        int tl = (int) (exp(0.9784876919 * log (cufftbench_s + i)) * 22366.92473079 / 1.01);
+        int tl = (int) (exp(0.9784876919 * log ((double)cufftbench_s + i)) * 22366.92473079 / 1.01);
         if(tl % 2 == 0) tl -= 1;
         while(!isprime(tl)) tl -= 2;
         fprintf(fptr, "%5d %10d %8.4f\n", cufftbench_s + i, tl, total[i] / passes);
       }
     }
     fclose(fptr);
-    printf("Optimal fft lengths saved in %s. Please email a copy to james@mersenne.ca.\n", fftfile);
+    printf("Optimal fft lengths saved in %s.\nPlease email a copy to james@mersenne.ca.\n", fftfile);
     fflush(NULL);
    }
 
@@ -2422,7 +2444,7 @@ int round_off_test(int q, int n, int *j, unsigned *control, int last)
   float max_err = 0.0, max_err1 = 0.0;
   int bit;
 
-      printf("Running careful round off test for 1000 iterations. If average error >= 0.25, the test will restart with a longer FFT.\n");
+      printf("Running careful round off test for 1000 iterations. If average error > 0.25, the test will restart with a longer FFT.\n");
       for (k = 0; k < 1000 && k < last; k++)
 	    {
         bit = get_bit(last - k - 1, control);
@@ -2432,9 +2454,9 @@ int round_off_test(int q, int n, int *j, unsigned *control, int last)
         if(terr > max_err1) max_err1 = terr;
         totalerr += terr;
         reset_err(&maxerr, 0.85);
-        if(terr >= 0.40)
+        if(terr >= 0.35)
         {
-	        printf ("Iteration = %d < 1000 && err = %5.5f >= 0.40, increasing n from %dK\n", k, terr, n/1024);
+	        printf ("Iteration = %d < 1000 && err = %5.5f >= 0.35, increasing n from %dK\n", k, terr, n/1024);
 	        fftlen++;
 	        return 1;
         }
@@ -2445,9 +2467,9 @@ int round_off_test(int q, int n, int *j, unsigned *control, int last)
 	      }
 	    }
       avgerr = totalerr/1000.0;
-      if( avgerr >= 0.40)
+      if( avgerr > 0.25)
       {
-        printf("Iteration 1000, average error = %5.5f >= 0.40 (max error = %5.5f), increasing FFT length and restarting\n", avgerr, max_err);
+        printf("Iteration 1000, average error = %5.5f > 0.25 (max error = %5.5f), increasing FFT length and restarting\n", avgerr, max_err);
         fftlen++;
         return 1;
       }
@@ -2458,7 +2480,7 @@ int round_off_test(int q, int n, int *j, unsigned *control, int last)
       }
       else
       {
-        printf("Iteration 1000, average error = %5.5f < 0.25 (max error = %5.5f), continuing test.\n", avgerr, max_err1);
+        printf("Iteration 1000, average error = %5.5f <= 0.25 (max error = %5.5f), continuing test.\n", avgerr, max_err1);
         reset_err(&maxerr, 0.85);
       }
       *j += 1000;
@@ -2955,7 +2977,7 @@ int stage2_init_param3(int e, int n, int trans, float *err)
     if(i > 0)
     {
       cufftSafeCall (cufftExecZ2Z (plan, (cufftDoubleComplex *) &e_data[2 * i * n], (cufftDoubleComplex *) &e_data[2 * i * n], CUFFT_INVERSE));
-	    copy_kernel<<<n / threads1, threads1>>>(&e_data[(2 * i - 1) * n], &e_data[2 * i * n]);
+	    copy_kernel<<<n / (2*threads1), threads1>>>(&e_data[(2 * i - 1) * n], &e_data[2 * i * n]);
 	    trans++;
     }
   }
@@ -3072,7 +3094,7 @@ int stage2_init_param4(int num, int cur_rp, int base, int e, int n, uint8 *gaps,
     rp += 2 * gaps[j];
   }
   trans = stage2_init_param1(rp, 1, e, n, trans, err);
-  copy_kernel<<<n / threads1, threads1>>>(&rp_data[0], &e_data[0]);
+  copy_kernel<<<n / (2*threads1), threads1>>>(&rp_data[0], &e_data[0]);
   k = rp + 2;
   for(i = 1; i < num; i++)
   {
@@ -3084,7 +3106,7 @@ int stage2_init_param4(int num, int cur_rp, int base, int e, int n, uint8 *gaps,
       cutilSafeThreadSync();
       k += 2;
     }
-    copy_kernel<<<n / threads1, threads1>>>(&rp_data[i * n], &e_data[0]);
+    copy_kernel<<<n / (2*threads1), threads1>>>(&rp_data[i * n], &e_data[0]);
 
   }
 
@@ -3192,10 +3214,10 @@ int rp_init_count2a(int cur_rp, int e, int n, uint8 *gaps)
 }
 
 
-int stage2(int *x_int, unsigned *x_packed, int q, int n, float err)
+int stage2(int *x_int, unsigned *x_packed, int q, int n, int nrp, float err)
 {
   int j, i = 0, t;
-  int e, d, b2 = g_b2, nrp = g_nrp;
+  int e, d, b2 = g_b2;
   int rpt = 0, rp;
   int ks, ke, m = 0, k;
   int last = 0;
@@ -3628,10 +3650,14 @@ int stage2(int *x_int, unsigned *x_packed, int q, int n, float err)
 	  printf("\n");
   }
   while(m < rpt && !quitting);
-  if(!quitting) printf("Stage 2 complete, %d transforms, estimated total time = ", ptran_done + itran_done);
-  else printf("Quitting, estimated time spent = ");
-  print_time_from_seconds((int) itime + ptime);
-  printf("\n");
+  if(quitting < 2)
+  {
+    if(!quitting) printf("Stage 2 complete, %d transforms, estimated total time = ", ptran_done + itran_done);
+    else printf("Quitting, estimated time spent = ");
+    print_time_from_seconds((int) itime + ptime);
+    printf("\n");
+  }
+  else if (quitting == 2) printf ("err = %5.5g >= 0.40, quitting.\n", err);
   free(rp_gaps);
   cutilSafeCall (cudaFree ((char *) e_data));
   cutilSafeCall (cudaFree ((char *) rp_data));
@@ -3655,6 +3681,7 @@ check_pm1 (int q, char *expectedResidue)
   unsigned *control = NULL;
   int stage = 0, st1_factor = 0;
   size_t global_mem, free_mem, use_mem;
+  int nrp = g_nrp;
 
   signal (SIGTERM, SetQuitting);
   signal (SIGINT, SetQuitting);
@@ -3688,13 +3715,13 @@ check_pm1 (int q, char *expectedResidue)
     }
 
     g_d = g_d_commandline;
-    if(g_nrp == 0) g_nrp = ((free_mem - (size_t) unused_mem * 1024 * 1024)/ n / 8 - 7);
+    if(g_nrp == 0) nrp = ((free_mem - (size_t) unused_mem * 1024 * 1024)/ n / 8 - 7);
 #ifdef _MSC_VER
-    if (g_nrp > (4096/sizeof(double))*1024*1024/n)
-        g_nrp = (4096/sizeof(double))*1024*1024/n; // Max single allocation of 4 GB on Windows?
+    if (nrp > (4096/sizeof(double))*1024*1024/n)
+        nrp = (4096/sizeof(double))*1024*1024/n; // Max single allocation of 4 GB on Windows?
 #endif
-    if(g_nrp < 4) g_nrp = 4;
-    use_mem = (size_t) (8 * (g_nrp + 7)* (size_t) n);
+    if(nrp < 4) nrp = 4;
+    use_mem = (size_t) (8 * (nrp + 7)* (size_t) n);
 #ifdef _MSC_VER
     printf("Using up to %IuM GPU memory.\n",use_mem/1024/1024);
 #else
@@ -3705,7 +3732,7 @@ check_pm1 (int q, char *expectedResidue)
 
     double successrate = 0.0;
     if ((g_b1_commandline == 0) || (g_b2_commandline == 0)) {
-      guess_pminus1_bounds(q, tfdepth, llsaved, g_nrp, &b1, &g_b2, &successrate);
+      guess_pminus1_bounds(q, tfdepth, llsaved, nrp, &b1, &g_b2, &successrate);
     }
     if (g_b1_commandline > 0) b1 = g_b1_commandline;
     if (g_b2_commandline > 0) g_b2 = g_b2_commandline;
@@ -3825,7 +3852,9 @@ check_pm1 (int q, char *expectedResidue)
 	      gettimeofday (&time1, NULL);
 	      cutilSafeCall (cudaMemcpy (x_int, g_xint, sizeof (int) * n, cudaMemcpyDeviceToHost));
         standardize_digits_int(x_int, q, n, 0, n);
-        set_checkpoint_data(x_packed, q, n, j + 1, 2, total_time);
+        if(g_eb1 > b1) stage = 3;
+        else if(g_b2 > b1) stage = 2;
+        set_checkpoint_data(x_packed, q, n, j + 1, stage, total_time);
         pack_bits_int(x_int, x_packed, q, n);
         write_checkpoint_packed (x_packed, q);
         printbits_int (x_int, q, n, 0, NULL , 0, 1);
@@ -3838,23 +3867,22 @@ check_pm1 (int q, char *expectedResidue)
       }
       if(!st1_factor)
       {
-        printf("Starting stage 2.\n");
-        stage2(x_int, x_packed, q, n, maxerr);
-	      if(!quitting)
-	      {
-// 	        cutilSafeCall (cudaMemcpy (x_int, g_xint, sizeof (int) * n, cudaMemcpyDeviceToHost));
-//           if (!standardize_digits_int(x_int, q, n, 0, n))
-//           {
-//             set_checkpoint_data(x_packed, q, n, j + 1, 2, total_time);
-//             pack_bits_int(x_int, x_packed, q, n);
-//             printf("Accumulated Product: ");
-//             printbits_int (x_int, q, n, 0, NULL, 0, 0);
-// 	          printf("\n");
-// 	        }
-	        printf("Starting stage 2 gcd.\n");
-	        get_gcd(x_packed, q, n, 2);
-	        rm_checkpoint(q, keep_s1);
-	      }
+        if (stage == 3)
+        {
+          printf("Here's where we put the b1 extension calls\n");
+          stage = 2;
+        }
+        if(stage == 2)
+        {
+          printf("Starting stage 2.\n");
+          stage2(x_int, x_packed, q, n, nrp, maxerr);
+          if(!quitting)
+          {
+            printf("Starting stage 2 gcd.\n");
+            get_gcd(x_packed, q, n, 2);
+            rm_checkpoint(q, keep_s1);
+          }
+        }
       }
 	    printf("\n");
 	  }
@@ -4278,6 +4306,18 @@ while (argc > 1)
 	      exit (2);
 	    }
 	  sprintf (folder, "%s", argv[2]);
+	  argv += 2;
+	  argc -= 2;
+	}
+      else if (strcmp (argv[1], "-eb1") == 0)
+	{
+	  s_f = 1;
+	  if (argc < 3 || argv[2][0] == '-')
+	    {
+	      fprintf (stderr, "can't parse -eb1 option\n\n");
+	      exit (2);
+	    }
+	  g_eb1 = atoi(argv[2]);
 	  argv += 2;
 	  argc -= 2;
 	}
