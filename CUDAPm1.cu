@@ -101,7 +101,7 @@ __global__ void square (int n,
 {
   const int j2 = blockIdx.x * blockDim.x + threadIdx.x;
   double wkr, wki, xr, xi, yr, yi, ajr, aji, akr, aki;
-  double new_ajr, new_aji, new_akr, new_aki;
+  //double new_ajr, new_aji, new_akr, new_aki;
   const int m = n >> 1;
   const int nc = n >> 2;
   const int j = j2 << 1;
@@ -109,7 +109,7 @@ __global__ void square (int n,
   if (j2)
     {
       int nminusj = n - j;
-	  wkr = 0.5 - ct[nc - j2];
+      wkr = 0.5 - ct[nc - j2];
       wki = ct[j2];
       ajr = a[j];
       aji = a[1 + j];
@@ -124,20 +124,20 @@ __global__ void square (int n,
       akr += yr;
       aki -= yi;
 
-      new_aji = 2.0 * ajr * aji;
-      new_ajr = (ajr - aji) * (ajr + aji);
-      new_aki = 2.0 * akr * aki;
-      new_akr = (akr - aki) * (akr + aki);
+      xi = 2.0 * ajr * aji;
+      xr = (ajr - aji) * (ajr + aji);
+      yi = 2.0 * akr * aki;
+      yr = (akr - aki) * (akr + aki);
 
-      xr = new_ajr - new_akr;
-      xi = new_aji + new_aki;
-      yr = wkr * xr + wki * xi;
-      yi = wkr * xi - wki * xr;
+      ajr = xr - yr;
+      aji = xi + yi;
+      akr = wkr * ajr + wki * aji;
+      aki = wkr * aji - wki * ajr;
 
-      a[j] = new_ajr - yr;
-      a[1 + j] = yi - new_aji;
-      a[nminusj] = new_akr + yr;
-      a[1 + nminusj] =  yi - new_aki;
+      a[j] = xr - akr;
+      a[1 + j] = aki - xi;
+      a[nminusj] = yr + akr;
+      a[1 + nminusj] =  aki - yi;
     }
   else
     {
@@ -2116,7 +2116,7 @@ int isReasonable(int fft)
 void threadbench (int n, int passes, int device_number)
 {
   float total[216] = {0.0f}, outerTime, maxerr = 0.5f;
-  int threads[] = {32, 64, 128, 256, 512, 1024};
+  int threads[6] = {32, 64, 128, 256, 512, 1024};
   int t1, t2, t3, i;
   float best_time = 10000.0f;
   int best_t1 = 0, best_t2 = 0, best_t3 = 0;
